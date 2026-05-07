@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from cryptography.fernet import Fernet
+from lang import detect_lang, _save_user_lang, clear_user_lang, _get_user_lang, _get_explicit_lang
 import json
 import datetime
 import os
@@ -36,10 +37,6 @@ def load_locales() -> dict:
 
 LOCALES = load_locales()
 
-
-def detect_lang(interaction: discord.Interaction) -> str:
-    code = str(interaction.locale).split("-")[0]  # "en-US" → "en"
-    return code if code in LOCALES else DEFAULT_LANG
 
 
 def t(lang: str, key: str, **kwargs) -> str:
@@ -97,7 +94,7 @@ def load_users() -> dict:
         raw = json.load(f)
     result = {}
     for user_id, record in raw.items():
-        entry = {"lang": record.get("lang"), "active": record.get("active", True)}
+        entry = {"lang": record.get("lang"), "lang_explicit": record.get("lang_explicit", False), "active": record.get("active", True)}
         if "bday" in record:
             try:
                 bday = json.loads(fernet.decrypt(record["bday"].encode()))
@@ -114,6 +111,8 @@ def save_users(data: dict) -> None:
         record = {}
         if entry.get("lang"):
             record["lang"] = entry["lang"]
+        if entry.get("lang_explicit"):
+            record["lang_explicit"] = True
         if not entry.get("active", True):
             record["active"] = False
         bday_data = {k: entry[k] for k in BDAY_KEYS if k in entry}
@@ -127,9 +126,6 @@ def save_users(data: dict) -> None:
 #  COG
 # ─────────────────────────────────────────────
 
-# Sestaveno z dostupných locale souborů — přidání nového jazyka stačí vytvořit JSON v locales/.
-LANG_NAMES   = {code: loc.get("lang_name", code) for code, loc in LOCALES.items()}
-LANG_CHOICES = [app_commands.Choice(name=LANG_NAMES[code], value=code) for code in sorted(LANG_NAMES)]
 
 
 class BdayCog(commands.Cog):
@@ -182,7 +178,7 @@ class BdayCog(commands.Cog):
     async def bday(self, interaction: discord.Interaction, day: int, month: int, year: int | None = None):
         users = load_users()
         user_id = str(interaction.user.id)
-        lang = users.get(user_id, {}).get("lang") or detect_lang(interaction)
+        lang = detect_lang(interaction)
 
         if not (1 <= day <= 31):
             await interaction.response.send_message(t(lang, "err_day"), ephemeral=True)
@@ -229,7 +225,7 @@ class BdayCog(commands.Cog):
     async def bday_remove(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
         users = load_users()
-        lang = users.get(user_id, {}).get("lang") or detect_lang(interaction)
+        lang = detect_lang(interaction)
 
         if "day" not in users.get(user_id, {}):
             await interaction.response.send_message(t(lang, "bday_not_found"), ephemeral=True)
@@ -246,26 +242,6 @@ class BdayCog(commands.Cog):
         log.info(f"Birthday removed for {interaction.user} ({user_id}).")
 
     @app_commands.command(
-        name="lang",
-        description=app_commands.locale_str("Change bot language", key="cmd_lang"),
-    )
-    @app_commands.describe(lang=app_commands.locale_str("Choose language", key="cmd_lang_lang"))
-    @app_commands.choices(lang=LANG_CHOICES)
-    async def lang_cmd(self, interaction: discord.Interaction, lang: app_commands.Choice[str]):
-        user_id = str(interaction.user.id)
-        users = load_users()
-
-        record = users.get(user_id, {})
-        record["lang"] = lang.value
-        users[user_id] = record
-        save_users(users)
-
-        await interaction.response.send_message(
-            t(lang.value, "lang_changed", name=LANG_NAMES[lang.value]), ephemeral=True
-        )
-        log.info(f"Language changed for {interaction.user} ({user_id}): {lang.value}")
-
-    @app_commands.command(
         name="bday-set",
         description=app_commands.locale_str("Set the birthday announcement channel", key="cmd_bday_set"),
     )
@@ -276,7 +252,7 @@ class BdayCog(commands.Cog):
     async def bday_set(self, interaction: discord.Interaction, channel: discord.TextChannel | None = None):
         user_id = str(interaction.user.id)
         users = load_users()
-        lang = users.get(user_id, {}).get("lang") or detect_lang(interaction)
+        lang = detect_lang(interaction)
 
         target = channel or interaction.channel
         self.bday_channel_id = target.id

@@ -4,11 +4,12 @@ from discord.ext import commands
 import json
 import os
 import logging
+from lang import _get_user_lang, _get_explicit_lang, _save_user_lang, clear_user_lang, detect_lang
 
 SCRIPT_DIR       = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE      = os.path.join(SCRIPT_DIR, "config.json")        # ID trigger kanálu a hlasové role
-VOICE_DATA_FILE  = os.path.join(SCRIPT_DIR, "voice_data.json")    # aktivní auto-místnosti za běhu
-USERS_FILE       = os.path.join(SCRIPT_DIR, "users.json")         # jazyk + hlasové předvolby (sdíleno s bday.py)
+CONFIG_FILE      = os.path.join(SCRIPT_DIR, "config.json")
+VOICE_DATA_FILE  = os.path.join(SCRIPT_DIR, "voice_data.json")
+USERS_FILE       = os.path.join(SCRIPT_DIR, "users.json")
 LOCALES_DIR      = os.path.join(SCRIPT_DIR, "locales")
 DEFAULT_LANG     = "en"
 
@@ -16,12 +17,9 @@ log = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
 #  LOCALIZATION
-#  Načítání překladů ze složky locales/, detekce
-#  jazyka uživatele a překladová funkce t().
 # ─────────────────────────────────────────────
 
 def _load_locales() -> dict:
-    # Načte všechny .json soubory z locales/ při startu bota.
     locales = {}
     for fname in os.listdir(LOCALES_DIR):
         if fname.endswith(".json"):
@@ -31,33 +29,6 @@ def _load_locales() -> dict:
     return locales
 
 LOCALES = _load_locales()
-
-# Čte/zapisuje jazyk uživatele do users.json (sdíleno s bday.py, pole "lang" není šifrované).
-def _get_user_lang(user_id: str) -> str | None:
-    if not os.path.exists(USERS_FILE):
-        return None
-    with open(USERS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f).get(user_id, {}).get("lang")
-
-def _save_user_lang(user_id: str, lang: str) -> None:
-    data = {}
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    data.setdefault(user_id, {})["lang"] = lang
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
-# Zjistí jazyk uživatele: nejdřív uložené nastavení, pak Discord locale. Výsledek uloží.
-def detect_lang(interaction: discord.Interaction) -> str:
-    user_id = str(interaction.user.id)
-    saved = _get_user_lang(user_id)
-    if saved and saved in LOCALES:
-        return saved
-    code = str(interaction.locale).split("-")[0]
-    lang = code if code in LOCALES else DEFAULT_LANG
-    _save_user_lang(user_id, lang)
-    return lang
 
 # Přeloží klíč do daného jazyka. Při chybějícím překladu fallback na angličtinu.
 def t(lang: str, key: str, **kwargs) -> str:
@@ -413,6 +384,7 @@ class _MemorySelect(discord.ui.Select):
         prefs    = load_voice_prefs()
         prefs.setdefault(user_id, {})["remember"] = {k: (k in selected) for k in REMEMBER_KEYS}
         save_voice_prefs(prefs)
+        log.info(f"Voice memory settings updated for {interaction.user}: {sorted(selected) or 'none'}.")
         await interaction.response.edit_message(content=t(lang, "voice_ok_memory"), view=None)
 
 
@@ -439,8 +411,12 @@ _LANG_OPTIONS = [
 
 
 class _LangSelect(discord.ui.Select):
-    def __init__(self, current_lang: str, lang: str = DEFAULT_LANG):
-        options = [
+    def __init__(self, current_lang: str | None, lang: str = DEFAULT_LANG):
+        auto_option = discord.SelectOption(
+            label=t(lang, "lang_auto"), value="auto", emoji=None,
+            default=(current_lang is None),
+        )
+        lang_options = [
             discord.SelectOption(
                 label=opt.label, value=opt.value, emoji=opt.emoji,
                 default=(opt.value == current_lang),
@@ -450,24 +426,32 @@ class _LangSelect(discord.ui.Select):
         super().__init__(
             placeholder=t(lang, "voice_lang_placeholder"),
             min_values=1, max_values=1,
-            options=options,
+            options=[auto_option] + lang_options,
         )
 
     async def callback(self, interaction: discord.Interaction):
-        chosen = self.values[0]
-        _save_user_lang(str(interaction.user.id), chosen)
+        chosen  = self.values[0]
+        user_id = str(interaction.user.id)
+        lang    = detect_lang(interaction)
+        if chosen == "auto":
+            clear_user_lang(user_id)
+            log.info(f"Language reset to auto for {interaction.user}.")
+            await interaction.response.edit_message(content=t(lang, "lang_reset"), view=None)
+            return
+        _save_user_lang(user_id, chosen, explicit=True)
+        log.info(f"Language set to '{chosen}' for {interaction.user}.")
         await interaction.response.edit_message(
             content=t(chosen, "lang_changed", name=LOCALES[chosen].get("lang_name", chosen)), view=None
         )
         channel_id = str(interaction.channel_id)
         data = load_voice_data()
         ch_data = data.get(channel_id)
-        if ch_data and str(interaction.user.id) == ch_data.get("owner_id"):
+        if ch_data and user_id == ch_data.get("owner_id"):
             await update_control_panel(interaction.channel, ch_data, chosen)
 
 
 class LangView(discord.ui.View):
-    def __init__(self, current_lang: str, lang: str = DEFAULT_LANG):
+    def __init__(self, current_lang: str | None, lang: str = DEFAULT_LANG):
         super().__init__(timeout=60)
         self.add_item(_LangSelect(current_lang, lang))
 
@@ -508,12 +492,14 @@ class UserActionView(discord.ui.View):
             if uid in lst:
                 lst.remove(uid)
                 msg = t(lang, "voice_ok_allowed_removed", mention=target.mention)
+                log.info(f"Voice channel {self.channel_id}: allow removed for {target} by {interaction.user}.")
             else:
                 lst.append(uid)
                 ch_data.setdefault("banned_users", [])
                 if uid in ch_data["banned_users"]:
                     ch_data["banned_users"].remove(uid)
                 msg = t(lang, "voice_ok_allowed_added", mention=target.mention)
+                log.info(f"Voice channel {self.channel_id}: {target} allowed by {interaction.user}.")
 
         elif self.action == "ban_user":
             if uid == str(interaction.user.id):
@@ -523,12 +509,14 @@ class UserActionView(discord.ui.View):
             if uid in lst:
                 lst.remove(uid)
                 msg = t(lang, "voice_ok_unbanned", mention=target.mention)
+                log.info(f"Voice channel {self.channel_id}: {target} unbanned by {interaction.user}.")
             else:
                 lst.append(uid)
                 ch_data.setdefault("allowed_users", [])
                 if uid in ch_data["allowed_users"]:
                     ch_data["allowed_users"].remove(uid)
                 msg = t(lang, "voice_ok_banned", mention=target.mention)
+                log.info(f"Voice channel {self.channel_id}: {target} banned by {interaction.user}.")
                 member = interaction.guild.get_member(target.id)
                 if member and member.voice and member.voice.channel and member.voice.channel.id == self.channel_id:
                     await member.move_to(None)
@@ -538,6 +526,7 @@ class UserActionView(discord.ui.View):
             if member and member.voice and member.voice.channel and member.voice.channel.id == self.channel_id:
                 await member.move_to(None)
                 msg = t(lang, "voice_ok_kicked", mention=target.mention)
+                log.info(f"Voice channel {self.channel_id}: {target} kicked by {interaction.user}.")
             else:
                 msg = t(lang, "voice_err_not_in_channel", mention=target.mention)
 
@@ -557,6 +546,7 @@ class UserActionView(discord.ui.View):
                 lang=lang,
             )
             save_prefs_from_channel(str(interaction.user.id), ch_data)
+            log.info(f"Voice channel {self.channel_id}: ownership transferred to {target} by {interaction.user}.")
             self.stop()
             await interaction.response.edit_message(content=t(lang, "voice_ok_transferred", mention=target.mention), view=None)
             return
@@ -603,24 +593,28 @@ class RoleActionView(discord.ui.View):
             if rid in lst:
                 lst.remove(rid)
                 msg = t(lang, "voice_ok_allowed_removed", mention=target.mention)
+                log.info(f"Voice channel {self.channel_id}: allow removed for role {target.name} by {interaction.user}.")
             else:
                 lst.append(rid)
                 ch_data.setdefault("banned_roles", [])
                 if rid in ch_data["banned_roles"]:
                     ch_data["banned_roles"].remove(rid)
                 msg = t(lang, "voice_ok_allowed_added", mention=target.mention)
+                log.info(f"Voice channel {self.channel_id}: role {target.name} allowed by {interaction.user}.")
 
         elif self.action == "ban_role":
             lst = ch_data.setdefault("banned_roles", [])
             if rid in lst:
                 lst.remove(rid)
                 msg = t(lang, "voice_ok_unbanned", mention=target.mention)
+                log.info(f"Voice channel {self.channel_id}: role {target.name} unbanned by {interaction.user}.")
             else:
                 lst.append(rid)
                 ch_data.setdefault("allowed_roles", [])
                 if rid in ch_data["allowed_roles"]:
                     ch_data["allowed_roles"].remove(rid)
                 msg = t(lang, "voice_ok_banned", mention=target.mention)
+                log.info(f"Voice channel {self.channel_id}: role {target.name} banned by {interaction.user}.")
                 for member in list(channel.members):
                     if target in member.roles:
                         await member.move_to(None)
@@ -693,6 +687,8 @@ class ControlView(discord.ui.View):
         await update_control_panel(channel, ch_data, lang)
         save_prefs_from_channel(str(interaction.user.id), ch_data)
 
+        state = "locked" if ch_data["locked"] else "unlocked"
+        log.info(f"Voice channel {channel_id} {state} by {interaction.user}.")
         msg = t(lang, "voice_ok_locked") if ch_data["locked"] else t(lang, "voice_ok_unlocked")
         await interaction.response.send_message(msg, ephemeral=True)
 
@@ -781,14 +777,21 @@ class ControlView(discord.ui.View):
         prefs   = load_voice_prefs()
         prefs.pop(user_id, None)
         save_voice_prefs(prefs)
+        log.info(f"Voice preferences cleared for {interaction.user}.")
         await interaction.response.send_message(t(lang, "voice_ok_prefs_cleared"), ephemeral=True)
 
     @discord.ui.button(label="Language", style=discord.ButtonStyle.grey, emoji="🌐", custom_id="vc_lang", row=3)
     async def lang_btn(self, interaction: discord.Interaction, _btn: discord.ui.Button):
         lang         = detect_lang(interaction)
-        current_lang = _get_user_lang(str(interaction.user.id)) or lang
+        user_id      = str(interaction.user.id)
+        current_lang = _get_explicit_lang(user_id)
         view         = LangView(current_lang, lang)
         await interaction.response.send_message(t(lang, "voice_prompt_lang"), view=view, ephemeral=True)
+        # Update panel immediately if owner — catches first-time English panel
+        data    = load_voice_data()
+        ch_data = data.get(str(interaction.channel_id))
+        if ch_data and ch_data.get("owner_id") == user_id:
+            await update_control_panel(interaction.channel, ch_data, lang)
 
 # ─────────────────────────────────────────────
 #  COG

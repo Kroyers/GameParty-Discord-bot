@@ -1,0 +1,27 @@
+[0.1.2] — 2026-05-04
+# Přidáno
+## Automatická aktualizace bota při spuštění nebo po restartu
+## Nastavení role pro upozornění (YouTube a Twitch)
+## Editace stream zprávy, že již stream skončil a jak dlouho běžel
+## Informace o botovi pomocí příkazu
+## Rychlé restartování bota pomocí příkazu - při restartu status idle
+## Herní anketa s ukončením libovolným počtem dní do 16:00
+
+# Opraveno
+## V anketách po nastavení role @everyone se zprávy od bota ukazovali jako @@everyone
+## Neukazují se náhledy YouTube Shorts
+## Mizející náhled streamu po ukončení streamu
+## Lokalizace pro upozornění streamů a videí
+## Špatné chování jazykové detekce klienta
+
+[0.1.1] — 2026-04-27
+# Přidáno
+## Automatické hlasové kanály
+## Upozornění na nové video nebo živý stream
+## Lokalizace bota do jiných jazyků
+
+[0.1.0] — 2026-04-5
+# Přidáno
+## Víkendové herní ankety
+## Narozeninová upozornění
+## Logování bota

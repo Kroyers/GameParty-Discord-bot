@@ -1,11 +1,13 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+from lang import detect_lang
 import os
 import sys
 import subprocess
 import re
 import io
+import json
 import zipfile
 import urllib.request
 import urllib.error
@@ -17,6 +19,7 @@ from dotenv import load_dotenv
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_FILE   = os.path.join(SCRIPT_DIR, ".env")
 load_dotenv(ENV_FILE)
+# místo příkazů interaktivní menu | místo reakcí tlačítka na role | zpráva zkouška sirén
 
 # ─────────────────────────────────────────────
 #  FIRST-RUN SETUP
@@ -48,9 +51,26 @@ if not _github_env:
 else:
     GITHUB_REPO = _github_env
 GIT_BRANCH  = "main"
-VERSION     = "0.1.1"
+VERSION     = "0.1.2"
+
+LOCALES_DIR = os.path.join(SCRIPT_DIR, "locales")
+
+def _load_locales() -> dict:
+    locales = {}
+    if os.path.isdir(LOCALES_DIR):
+        for fname in os.listdir(LOCALES_DIR):
+            if fname.endswith(".json"):
+                with open(os.path.join(LOCALES_DIR, fname), "r", encoding="utf-8") as f:
+                    locales[fname[:-5]] = json.load(f)
+    return locales
+
+_LOCALES = _load_locales()
+
+def _t(lang: str, key: str) -> str:
+    return _LOCALES.get(lang, _LOCALES.get("en", {})).get(key, key)
 
 EXTENSIONS = [
+    "lang",
     "bday",
     "poll",
     "voice",
@@ -149,6 +169,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
+    await bot.change_presence(status=discord.Status.online)
     log.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
 
@@ -166,13 +187,26 @@ async def setup_hook_fn():
         log.info("Slash commands synced globally.")
 
 
-@bot.tree.command(name="restart", description="Pull latest version from GitHub and restart the bot")
+@bot.tree.command(name="info", description=app_commands.locale_str("Show information about the bot", key="cmd_info"))
+async def info_cmd(interaction: discord.Interaction):
+    lang  = detect_lang(interaction)
+    embed = discord.Embed(title=_t(lang, "info_title"), color=discord.Color.blurple())
+    embed.add_field(name=_t(lang, "info_version"), value=VERSION, inline=True)
+    if GITHUB_REPO:
+        embed.add_field(name=_t(lang, "info_github"), value=f"https://github.com/{GITHUB_REPO}", inline=True)
+    embed.add_field(name="—", value=_t(lang, "info_features"), inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="restart", description=app_commands.locale_str("Pull latest version from GitHub and restart the bot", key="cmd_restart"))
 @app_commands.default_permissions(administrator=True)
 async def restart_cmd(interaction: discord.Interaction):
     global _restart
-    await interaction.response.send_message("🔄 Restarting...", ephemeral=True)
+    lang = detect_lang(interaction)
+    await interaction.response.send_message(_t(lang, "restarting"), ephemeral=True)
     log.info(f"Restart triggered by {interaction.user}.")
     _restart = True
+    await bot.change_presence(status=discord.Status.idle)
     await bot.close()
 
 
