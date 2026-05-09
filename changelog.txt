@@ -1,4 +1,4 @@
-[0.2.0] — 2026-05-
+[0.2.0] — 2026-05-09
 # Added
 ## RSS news notifications (e.g. Steam Hardware)
 ## Minigame Rock, Paper, Scissors /rps
