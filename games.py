@@ -87,8 +87,9 @@ class RpsChoiceView(discord.ui.View):
         self.lang      = lang
 
     async def _pick(self, interaction: discord.Interaction, choice: str) -> None:
+        lang = detect_lang(interaction)
         if interaction.user.id != self.player_id:
-            await interaction.response.send_message(t(self.lang, "rps_not_your_game"), ephemeral=True)
+            await interaction.response.send_message(t(lang, "rps_not_your_game"), ephemeral=True)
             return
         game = _games.get(self.msg_id)
         if not game:
@@ -96,11 +97,11 @@ class RpsChoiceView(discord.ui.View):
             return
         role_key = "challenger_pick" if interaction.user.id == game["challenger_id"] else "opponent_pick"
         if game[role_key]:
-            await interaction.response.send_message(t(self.lang, "rps_already_picked"), ephemeral=True)
+            await interaction.response.send_message(t(lang, "rps_already_picked"), ephemeral=True)
             return
         game[role_key] = choice
         self.stop()
-        await interaction.response.edit_message(content=f"✅ {t(self.lang, 'rps_waiting')}", view=None)
+        await interaction.response.edit_message(content=f"✅ {t(lang, 'rps_waiting')}", view=None)
         if game["challenger_pick"] and game["opponent_pick"]:
             await _resolve_rps(interaction.client, self.msg_id)
 
@@ -132,15 +133,16 @@ class RpsPickView(discord.ui.View):
 
     @discord.ui.button(style=discord.ButtonStyle.green)
     async def pick(self, interaction: discord.Interaction, _: discord.ui.Button):
+        lang = detect_lang(interaction)
         if interaction.user.id not in (self.challenger_id, self.opponent_id):
-            await interaction.response.send_message(t(self.lang, "rps_not_your_game"), ephemeral=True)
+            await interaction.response.send_message(t(lang, "rps_not_your_game"), ephemeral=True)
             return
         if not _games.get(self.msg.id):
             await interaction.response.send_message("❌", ephemeral=True)
             return
-        view = RpsChoiceView(self.msg.id, interaction.user.id, self.lang)
+        view = RpsChoiceView(self.msg.id, interaction.user.id, lang)
         await interaction.response.send_message(
-            content=f"🎯 {t(self.lang, 'rps_choose')}",
+            content=f"🎯 {t(lang, 'rps_choose')}",
             view=view,
             ephemeral=True,
         )
@@ -173,7 +175,7 @@ class RpsAcceptView(discord.ui.View):
     @discord.ui.button(style=discord.ButtonStyle.green, custom_id="rps_accept")
     async def accept(self, interaction: discord.Interaction, _: discord.ui.Button):
         if interaction.user.id != self.opponent_id:
-            await interaction.response.send_message(t(self.lang, "rps_not_your_game"), ephemeral=True)
+            await interaction.response.send_message(t(detect_lang(interaction), "rps_not_your_game"), ephemeral=True)
             return
         self.stop()
         embed = discord.Embed(
@@ -189,7 +191,7 @@ class RpsAcceptView(discord.ui.View):
     @discord.ui.button(style=discord.ButtonStyle.red, custom_id="rps_decline")
     async def decline(self, interaction: discord.Interaction, _: discord.ui.Button):
         if interaction.user.id != self.opponent_id:
-            await interaction.response.send_message(t(self.lang, "rps_not_your_game"), ephemeral=True)
+            await interaction.response.send_message(t(detect_lang(interaction), "rps_not_your_game"), ephemeral=True)
             return
         if self._msg:
             _games.pop(self._msg.id, None)

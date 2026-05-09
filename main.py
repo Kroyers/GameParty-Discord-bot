@@ -59,7 +59,7 @@ if not _github_env:
 else:
     GITHUB_REPO = _github_env
 GIT_BRANCH  = "main"
-VERSION     = "0.2.0" #MAJOR . MINOR - new functions . PATCH - bugfix
+VERSION     = "0.2.1" #MAJOR . MINOR - new functions . PATCH - bugfix
 
 LOCALES_DIR = os.path.join(SCRIPT_DIR, "locales")
 

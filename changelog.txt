@@ -1,3 +1,7 @@
+[0.2.1] — 2026-05-09
+# Fixed
+## Rock, Paper, Scissors are now more multi language
+
 [0.2.0] — 2026-05-09
 # Added
 ## RSS news notifications (e.g. Steam Hardware)
