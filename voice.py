@@ -813,7 +813,9 @@ class VoiceCog(commands.Cog):
         data = load_voice_data()
 
         # ── Left auto-room: delete if empty, or auto-transfer ownership ──
-        if before.channel and str(before.channel.id) in data:
+        if before.channel and str(before.channel.id) in data and (
+            after.channel is None or after.channel.id != before.channel.id
+        ):
             channel_id = str(before.channel.id)
             ch_data    = data[channel_id]
             channel    = before.channel

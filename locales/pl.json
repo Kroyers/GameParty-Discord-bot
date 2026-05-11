@@ -231,5 +231,11 @@
   "roll_result": "{user} wylosował **{result}**.",
   "roll_err_min": "Maksimum musi wynosić co najmniej 2.",
 
-  "rps_cooldown": "Jesteś na cooldownie. Spróbuj ponownie za {seconds} sekund."
+  "rps_cooldown": "Jesteś na cooldownie. Spróbuj ponownie za {seconds} sekund.",
+
+  "cmd_leaderboard": "Wyświetl ranking KNP",
+  "leaderboard_title": "Ranking KNP",
+  "leaderboard_empty": "Nie rozegrano jeszcze żadnych gier.",
+  "leaderboard_wins": "wygranych",
+  "leaderboard_games": "gier"
 }

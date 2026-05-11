@@ -231,5 +231,11 @@
   "roll_result": "{user} hodil **{result}**.",
   "roll_err_min": "Maximum musí být alespoň 2.",
 
-  "rps_cooldown": "Musíš počkat. Zkus to znovu za {seconds} sekund."
+  "rps_cooldown": "Musíš počkat. Zkus to znovu za {seconds} sekund.",
+
+  "cmd_leaderboard": "Zobraz žebříček hráčů KNP",
+  "leaderboard_title": "Žebříček KNP",
+  "leaderboard_empty": "Zatím nebyly odehrány žádné hry.",
+  "leaderboard_wins": "výher",
+  "leaderboard_games": "her"
 }

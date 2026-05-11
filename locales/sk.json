@@ -231,5 +231,11 @@
   "roll_result": "{user} hodil **{result}**.",
   "roll_err_min": "Maximum musí byť aspoň 2.",
 
-  "rps_cooldown": "Si na cooldowne. Skús to znova za {seconds} sekúnd."
+  "rps_cooldown": "Si na cooldowne. Skús to znova za {seconds} sekúnd.",
+
+  "cmd_leaderboard": "Zobraz rebríček hráčov KNP",
+  "leaderboard_title": "Rebríček KNP",
+  "leaderboard_empty": "Zatiaľ neboli odohrané žiadne hry.",
+  "leaderboard_wins": "výhier",
+  "leaderboard_games": "hier"
 }

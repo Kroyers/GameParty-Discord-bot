@@ -1,3 +1,12 @@
+[0.2.2] — 2026-05-11
+# Added
+## Rock, Paper, Scissors leaderboard
+
+# Fixed
+## Voice room ownership no longer auto-transfers when owner mutes, turns on camera or shares screen
+## Rock, Paper, Scissors are now more more multi language
+## Rock, Paper, Scissors will ping now
+
 [0.2.1] — 2026-05-09
 # Fixed
 ## Rock, Paper, Scissors are now more multi language

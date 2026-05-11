@@ -215,7 +215,7 @@ class BdayCog(commands.Cog):
 
         year_str = f".{year}" if year else ""
         await interaction.response.send_message(
-            f"✅ {t(lang, "saved", date=f"{day}.{month}{year_str}")}", ephemeral=True
+            f"✅ {t(lang, "saved", date=f"{day}.{month}.{year_str}")}", ephemeral=True
         )
         log.info(f"Birthday saved for {interaction.user} ({user_id}) [{lang}]")
 

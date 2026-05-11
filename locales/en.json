@@ -231,5 +231,11 @@
   "roll_result": "{user} rolled **{result}**.",
   "roll_err_min": "Maximum must be at least 2.",
 
-  "rps_cooldown": "You're on cooldown. Try again in {seconds} seconds."
+  "rps_cooldown": "You're on cooldown. Try again in {seconds} seconds.",
+
+  "cmd_leaderboard": "Show RPS leaderboard",
+  "leaderboard_title": "RPS Leaderboard",
+  "leaderboard_empty": "No games have been played yet.",
+  "leaderboard_wins": "wins",
+  "leaderboard_games": "games"
 }
