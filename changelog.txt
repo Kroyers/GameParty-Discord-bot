@@ -1,3 +1,7 @@
+[0.2.4] — 2026-05-31
+# Fixed
+## Score of Rock, Paper, Scissors no longer swaps.
+
 [0.2.3] — 2026-05-31
 # Changed
 ## Rock, Paper, Scissors are now repeatable now with score (0:0)

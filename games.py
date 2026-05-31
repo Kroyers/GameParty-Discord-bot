@@ -183,8 +183,10 @@ async def _resolve_rps(client: discord.Client, msg_id: int) -> None:
         if not eph:
             continue
         target_name = (c_name if target_id == c_id else o_name)
+        new_sc = score_c if uid == c_id else score_o
+        new_so = score_o if uid == c_id else score_c
         rematch_view = RpsEphemeralRematchView(
-            uid, target_id, player_lang, target_lang, ephs, msg, score_c, score_o
+            uid, target_id, player_lang, target_lang, ephs, msg, new_sc, new_so
         )
         await _eph_edit(eph, content=f"🔄 **{target_name}**", view=rematch_view)
 
