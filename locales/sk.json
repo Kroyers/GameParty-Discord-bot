@@ -218,8 +218,8 @@
   "rps_not_your_game": "Táto výzva nie je pre teba.",
   "rps_declined": "{opponent} výzvu odmietol.",
   "rps_timeout": "Výzva vypršala.",
-  "rps_result_win": "{winner} vyhral! {winner_pick} bije {loser_pick}.",
-  "rps_result_draw": "Remíza! Obaja zvolili {pick}.",
+  "rps_result_win": "{winner} vyhral!",
+  "rps_result_draw": "Remíza!",
   "rps_err_bot": "Nemôžeš vyzvať bota.",
   "rps_err_self": "Nemôžeš vyzvať sám seba.",
   "rps_rock": "Kameň",
@@ -231,6 +231,9 @@
   "roll_result": "{user} hodil **{result}**.",
   "roll_err_min": "Maximum musí byť aspoň 2.",
 
+  "rps_rematch_challenge": "🔄 {challenger} ťa vyzýva na remač!",
+  "rps_wait_accept": "Čakám, kým {opponent} prijme výzvu...",
+  "rps_rematch_btn": "Hrať znovu",
   "rps_cooldown": "Si na cooldowne. Skús to znova za {seconds} sekúnd.",
 
   "cmd_leaderboard": "Zobraz rebríček hráčov KNP",

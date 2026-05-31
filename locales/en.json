@@ -218,8 +218,8 @@
   "rps_not_your_game": "This challenge is not for you.",
   "rps_declined": "{opponent} declined the challenge.",
   "rps_timeout": "The challenge timed out.",
-  "rps_result_win": "{winner} wins! {winner_pick} beats {loser_pick}.",
-  "rps_result_draw": "It's a draw! Both chose {pick}.",
+  "rps_result_win": "{winner} wins!",
+  "rps_result_draw": "It's a draw!",
   "rps_err_bot": "You can't challenge a bot.",
   "rps_err_self": "You can't challenge yourself.",
   "rps_rock": "Rock",
@@ -231,6 +231,9 @@
   "roll_result": "{user} rolled **{result}**.",
   "roll_err_min": "Maximum must be at least 2.",
 
+  "rps_rematch_challenge": "🔄 {challenger} challenges you to a rematch!",
+  "rps_wait_accept": "Waiting for {opponent} to accept...",
+  "rps_rematch_btn": "Play again",
   "rps_cooldown": "You're on cooldown. Try again in {seconds} seconds.",
 
   "cmd_leaderboard": "Show RPS leaderboard",

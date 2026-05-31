@@ -218,8 +218,8 @@
   "rps_not_your_game": "To wyzwanie nie jest dla ciebie.",
   "rps_declined": "{opponent} odrzucił wyzwanie.",
   "rps_timeout": "Czas wyzwania minął.",
-  "rps_result_win": "{winner} wygrywa! {winner_pick} bije {loser_pick}.",
-  "rps_result_draw": "Remis! Oboje wybrali {pick}.",
+  "rps_result_win": "{winner} wygrywa!",
+  "rps_result_draw": "Remis!",
   "rps_err_bot": "Nie możesz wyzwać bota.",
   "rps_err_self": "Nie możesz wyzwać samego siebie.",
   "rps_rock": "Kamień",
@@ -231,6 +231,9 @@
   "roll_result": "{user} wylosował **{result}**.",
   "roll_err_min": "Maksimum musi wynosić co najmniej 2.",
 
+  "rps_rematch_challenge": "🔄 {challenger} wzywa cię na rewanż!",
+  "rps_wait_accept": "Czekam, aż {opponent} zaakceptuje wyzwanie...",
+  "rps_rematch_btn": "Graj ponownie",
   "rps_cooldown": "Jesteś na cooldownie. Spróbuj ponownie za {seconds} sekund.",
 
   "cmd_leaderboard": "Wyświetl ranking KNP",
