@@ -7,7 +7,7 @@ users.json
 voice_data.json
 noti.json
 config.json
-rps_stats.json
+guess_state.json
 
 # Logs
 logs/

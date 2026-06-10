@@ -1,7 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from lang import detect_lang
+from lang import detect_lang, atomic_write_json, t
 import datetime
 import logging
 import json
@@ -14,7 +14,6 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # ─────────────────────────────────────────────
 
 CONFIG_FILE      = os.path.join(SCRIPT_DIR, "config.json")
-LOCALES_DIR      = os.path.join(SCRIPT_DIR, "locales")
 SEARCH_LIMIT = 20
 
 INTRO_MESSAGE = (
@@ -62,36 +61,7 @@ POLL_ANSWERS_START = [
 log = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
-#  LOCALIZATION
-# ─────────────────────────────────────────────
-
-def load_locales() -> dict:
-    locales = {}
-    for fname in os.listdir(LOCALES_DIR):
-        if fname.endswith(".json"):
-            code = fname[:-5]
-            with open(os.path.join(LOCALES_DIR, fname), "r", encoding="utf-8") as f:
-                locales[code] = json.load(f)
-    return locales
-
-LOCALES = load_locales()
-
-
-def t(lang: str, key: str, **kwargs) -> str:
-    text = LOCALES.get(lang, {}).get(key) or LOCALES.get("en", {}).get(key, key)
-    return text.format(**kwargs) if kwargs else text
-
-
-class LocaleTranslator(app_commands.Translator):
-    async def translate(self, string: app_commands.locale_str, locale: discord.Locale, _context: app_commands.TranslationContext) -> str | None:
-        key = string.extras.get("key")
-        if not key:
-            return None
-        lang_code = str(locale).split("-")[0]
-        return LOCALES.get(lang_code, {}).get(key)
-
-# ─────────────────────────────────────────────
-#  HELPERS
+#  HELPERS  (t/LOCALES live in lang.py)
 # ─────────────────────────────────────────────
 
 def role_mention(role: discord.Role) -> str:
@@ -104,8 +74,7 @@ def load_config() -> dict:
         return json.load(f)
 
 def save_config(data: dict) -> None:
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(CONFIG_FILE, data)
 
 def next_day_16(days: int) -> tuple[str, int]:
     """Returns (title, hours_until_target_day_16:00) using local clock."""
@@ -143,10 +112,14 @@ def next_weekend() -> tuple[str, int, datetime.datetime]:
 
 
 async def delete_old_messages(channel, bot_id):
-    """Deletes all bot messages in channel and locks bot threads."""
+    """Deletes the bot's previous poll messages (polls, intro embed with its
+    thread, plain ping messages) and locks the threads. Other bot messages in
+    the channel (e.g. the daily guess game) are left untouched."""
     deleted = 0
     async for msg in channel.history(limit=200):
         if msg.author.id != bot_id:
+            continue
+        if msg.poll is None and msg.thread is None and msg.embeds:
             continue
         if msg.thread is not None:
             try:
@@ -244,12 +217,12 @@ class PollCog(commands.Cog):
         )
         if ping and self.noti_role_id:
             if self.noti_role_id == channel.guild.id:
-                ping = await thread.send("@everyone", allowed_mentions=discord.AllowedMentions(everyone=True))
+                ping_msg = await thread.send("@everyone", allowed_mentions=discord.AllowedMentions(everyone=True))
             else:
                 noti_role = channel.guild.get_role(self.noti_role_id)
                 noti_mention = noti_role.mention if noti_role else f"<@&{self.noti_role_id}>"
-                ping = await thread.send(noti_mention)
-            await ping.delete()
+                ping_msg = await thread.send(noti_mention)
+            await ping_msg.delete()
         log.info(f"Thread created: '{thread.name}' (ID: {thread.id})")
 
         polls = [
@@ -319,12 +292,12 @@ class PollCog(commands.Cog):
         )
         if ping and self.noti_role_id:
             if self.noti_role_id == channel.guild.id:
-                ping = await thread.send("@everyone", allowed_mentions=discord.AllowedMentions(everyone=True))
+                ping_msg = await thread.send("@everyone", allowed_mentions=discord.AllowedMentions(everyone=True))
             else:
                 noti_role = channel.guild.get_role(self.noti_role_id)
                 noti_mention = noti_role.mention if noti_role else f"<@&{self.noti_role_id}>"
-                ping = await thread.send(noti_mention)
-            await ping.delete()
+                ping_msg = await thread.send(noti_mention)
+            await ping_msg.delete()
         log.info(f"Thread created: '{thread.name}' (ID: {thread.id})")
 
         polls = [
@@ -431,4 +404,3 @@ class PollCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(PollCog(bot))
-    await bot.tree.set_translator(LocaleTranslator())

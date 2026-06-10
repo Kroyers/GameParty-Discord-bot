@@ -1,10 +1,26 @@
+[0.3.0] — 2026-06-10
+# Added
+## Daily number guess
+## Season leaderboard from both mini games
+## New interactive menu for bday and language (commands have been deleted)
+
+# Changed
+## There are now points in the leaderboard. Can be earn them from RPS or Daily number guess
+
+# Fixed
+## Rock, paper, scissors time out when rematch
+## Scoreboard rock, paper, scissors is broken on phone
+## The voice channel is given to the user who has been in the channel the longest
+## Saving or removing a birthday wiped game stats and voice preferences of all users
+## Security improvements
+
 [0.2.5] — 2026-05-31
 # Changed
-## Leadeboard of Rock, Paper, Scissors will sort by games with the most wins first, followed by those with the fewest plays.
+## The rock, paper, scissors ranking now sorts by the number of wins and then by the fewest games played
 
 [0.2.4] — 2026-05-31
 # Fixed
-## Score of Rock, Paper, Scissors no longer swaps.
+## Score of Rock, Paper, Scissors swaps
 
 [0.2.3] — 2026-05-31
 # Changed
@@ -15,13 +31,13 @@
 ## Rock, Paper, Scissors leaderboard
 
 # Fixed
-## Voice room ownership no longer auto-transfers when owner mutes, turns on camera or shares screen
-## Rock, Paper, Scissors are now more more multi language
-## Rock, Paper, Scissors will ping now
+## Voice room ownership auto-transfers when owner mutes, turns on camera or shares screen
+## Rock, Paper, Scissors show multi-language wrong
+## Rock, Paper, Scissors no ping
 
 [0.2.1] — 2026-05-09
 # Fixed
-## Rock, Paper, Scissors are now more multi language
+## Rock, Paper, Scissors has no other languages
 
 [0.2.0] — 2026-05-09
 # Added

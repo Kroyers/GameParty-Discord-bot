@@ -2,7 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from cryptography.fernet import Fernet
-from lang import detect_lang, _save_user_lang, clear_user_lang, _get_user_lang, _get_explicit_lang
+from lang import detect_lang, _save_user_lang, clear_user_lang, _get_user_lang, _get_explicit_lang, atomic_write_json, t, DEFAULT_LANG
 import json
 import datetime
 import os
@@ -17,44 +17,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 USERS_FILE   = os.path.join(SCRIPT_DIR, "users.json")
 KEY_FILE     = os.path.join(SCRIPT_DIR, "bday.key")
 CONFIG_FILE  = os.path.join(SCRIPT_DIR, "config.json")
-LOCALES_DIR  = os.path.join(SCRIPT_DIR, "locales")
-DEFAULT_LANG = "en"
 
 log = logging.getLogger(__name__)
-
-# ─────────────────────────────────────────────
-#  LOCALIZATION
-# ─────────────────────────────────────────────
-
-def load_locales() -> dict:
-    locales = {}
-    for fname in os.listdir(LOCALES_DIR):
-        if fname.endswith(".json"):
-            code = fname[:-5]
-            with open(os.path.join(LOCALES_DIR, fname), "r", encoding="utf-8") as f:
-                locales[code] = json.load(f)
-    return locales
-
-LOCALES = load_locales()
-
-
-
-def t(lang: str, key: str, **kwargs) -> str:
-    text = LOCALES.get(lang, {}).get(key)
-    if not text:
-        if text is None:
-            log.warning(f"Missing translation: [{lang}] '{key}', falling back to '{DEFAULT_LANG}'.")
-        text = LOCALES.get(DEFAULT_LANG, {}).get(key, key)
-    return text.format(**kwargs) if kwargs else text
-
-
-class LocaleTranslator(app_commands.Translator):
-    async def translate(self, string: app_commands.locale_str, locale: discord.Locale, _context: app_commands.TranslationContext) -> str | None:
-        key = string.extras.get("key")
-        if not key:
-            return None
-        lang_code = str(locale).split("-")[0]
-        return LOCALES.get(lang_code, {}).get(key)
 
 # ─────────────────────────────────────────────
 #  ENCRYPTION
@@ -83,24 +47,28 @@ def load_config() -> dict:
         return json.load(f)
 
 def save_config(data: dict) -> None:
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(CONFIG_FILE, data)
 
 BDAY_KEYS = {"day", "month", "year", "last_wished"}
 
 def load_users() -> dict:
+    """Loads users.json with bday fields decrypted in place. All other keys
+    (rps, guess, voice, seasons_won, ...) are kept untouched so save_users
+    can write them back without losing data owned by other modules."""
     if not os.path.exists(USERS_FILE):
         return {}
     with open(USERS_FILE, "r", encoding="utf-8") as f:
         raw = json.load(f)
     result = {}
     for user_id, record in raw.items():
-        entry = {"lang": record.get("lang"), "lang_explicit": record.get("lang_explicit", False), "active": record.get("active", True)}
+        entry = dict(record)
         if "bday" in record:
             try:
                 bday = json.loads(fernet.decrypt(record["bday"].encode()))
+                del entry["bday"]
                 entry.update(bday)
             except Exception:
+                # Keep the encrypted blob so it survives the next save_users.
                 log.warning(f"Failed to decrypt bday for user {user_id}, skipping.")
         result[user_id] = entry
     return result
@@ -109,19 +77,72 @@ def load_users() -> dict:
 def save_users(data: dict) -> None:
     output = {}
     for user_id, entry in data.items():
-        record = {}
-        if entry.get("lang"):
-            record["lang"] = entry["lang"]
-        if entry.get("lang_explicit"):
-            record["lang_explicit"] = True
-        if not entry.get("active", True):
-            record["active"] = False
+        record = {k: v for k, v in entry.items() if k not in BDAY_KEYS}
+        if not record.get("lang"):
+            record.pop("lang", None)
+        if not record.get("lang_explicit"):
+            record.pop("lang_explicit", None)
+        if record.get("active", True):
+            record.pop("active", None)
         bday_data = {k: entry[k] for k in BDAY_KEYS if k in entry}
         if bday_data:
             record["bday"] = fernet.encrypt(json.dumps(bday_data).encode()).decode()
         output[user_id] = record
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(output, f, indent=2)
+    atomic_write_json(USERS_FILE, output)
+
+# ─────────────────────────────────────────────
+#  SHARED LOGIC  (used by /bday and the menu)
+# ─────────────────────────────────────────────
+
+def validate_bday(day: int, month: int, year: int | None) -> tuple[str, dict] | None:
+    """Returns (error_locale_key, format_kwargs), or None when the date is valid."""
+    if not (1 <= day <= 31):
+        return "err_day", {}
+    if not (1 <= month <= 12):
+        return "err_month", {}
+    check_year = year or 2000
+    try:
+        datetime.date(check_year, month, day)
+    except ValueError:
+        return "err_date", {"day": day, "month": month, "year": check_year}
+    if year is not None and not (1900 <= year <= datetime.date.today().year):
+        return "err_year", {"year": datetime.date.today().year}
+    return None
+
+
+def save_bday(user_id: str, lang: str, day: int, month: int, year: int | None) -> None:
+    users = load_users()
+    entry = users.setdefault(user_id, {})
+    entry["day"]   = day
+    entry["month"] = month
+    entry["year"]  = year
+    entry["lang"]  = lang
+    save_users(users)
+
+
+def has_bday(user_id: str) -> bool:
+    """True when the user has a birthday stored (raw check, no decryption)."""
+    if not os.path.exists(USERS_FILE):
+        return False
+    with open(USERS_FILE, "r", encoding="utf-8") as f:
+        return "bday" in json.load(f).get(user_id, {})
+
+
+def remove_bday(user_id: str) -> bool:
+    """Removes the stored birthday. Returns False when none was saved."""
+    users = load_users()
+    if "day" not in users.get(user_id, {}):
+        return False
+    for key in BDAY_KEYS:
+        users[user_id].pop(key, None)
+    if not any(users[user_id].values()):
+        del users[user_id]
+    save_users(users)
+    return True
+
+
+def format_bday(day: int, month: int, year: int | None) -> str:
+    return f"{day}.{month}.{year}" if year else f"{day}.{month}."
 
 # ─────────────────────────────────────────────
 #  COG
@@ -161,86 +182,7 @@ class BdayCog(commands.Cog):
             log.info(f"Birthday reactivated for user {user_id} (rejoined server).")
 
     # ── Commands ──────────────────────────────
-
-    @app_commands.command(
-        name="bday",
-        description=app_commands.locale_str("Register your birthday", key="cmd_bday"),
-    )
-    @app_commands.describe(
-        day=app_commands.locale_str("Day of birth (1–31)",       key="cmd_bday_day"),
-        month=app_commands.locale_str("Month of birth (1–12)",   key="cmd_bday_month"),
-        year=app_commands.locale_str("Year of birth (optional)", key="cmd_bday_year"),
-    )
-    @app_commands.rename(
-        day=app_commands.locale_str("day",   key="param_day"),
-        month=app_commands.locale_str("month", key="param_month"),
-        year=app_commands.locale_str("year",   key="param_year"),
-    )
-    async def bday(self, interaction: discord.Interaction, day: int, month: int, year: int | None = None):
-        users = load_users()
-        user_id = str(interaction.user.id)
-        lang = detect_lang(interaction)
-
-        if not (1 <= day <= 31):
-            await interaction.response.send_message(f"❌ {t(lang, 'err_day')}", ephemeral=True)
-            return
-        if not (1 <= month <= 12):
-            await interaction.response.send_message(f"❌ {t(lang, "err_month")}", ephemeral=True)
-            return
-
-        check_year = year or 2000
-        try:
-            datetime.date(check_year, month, day)
-        except ValueError:
-            await interaction.response.send_message(
-                f"❌ {t(lang, 'err_date', day=day, month=month, year=check_year)}"
-            )
-            return
-
-        if year is not None:
-            if not (1900 <= year <= datetime.date.today().year):
-                await interaction.response.send_message(
-                    f"❌ {t(lang, "err_year", year=datetime.date.today().year)}", ephemeral=True
-                )
-                return
-
-        users[user_id] = {
-            "day": day,
-            "month": month,
-            "year": year,
-            "lang": lang,
-            "last_wished": users.get(user_id, {}).get("last_wished"),
-        }
-        save_users(users)
-
-        year_str = f".{year}" if year else ""
-        await interaction.response.send_message(
-            f"✅ {t(lang, "saved", date=f"{day}.{month}.{year_str}")}", ephemeral=True
-        )
-        log.info(f"Birthday saved for {interaction.user} ({user_id}) [{lang}]")
-
-    @app_commands.command(
-        name="bday-remove",
-        description=app_commands.locale_str("Remove your saved birthday", key="cmd_bday_remove"),
-    )
-    async def bday_remove(self, interaction: discord.Interaction):
-        user_id = str(interaction.user.id)
-        users = load_users()
-        lang = detect_lang(interaction)
-
-        if "day" not in users.get(user_id, {}):
-            await interaction.response.send_message(f"❌ {t(lang, "bday_not_found")}", ephemeral=True)
-            return
-
-        for key in BDAY_KEYS:
-            users[user_id].pop(key, None)
-
-        if not any(users[user_id].values()):
-            del users[user_id]
-
-        save_users(users)
-        await interaction.response.send_message(f"✅ {t(lang, "bday_removed")}", ephemeral=True)
-        log.info(f"Birthday removed for {interaction.user} ({user_id}).")
+    # User-facing birthday registration/removal lives in the /menu (menu.py).
 
     @app_commands.command(
         name="bday-set",
@@ -314,4 +256,3 @@ class BdayCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(BdayCog(bot))
-    await bot.tree.set_translator(LocaleTranslator())

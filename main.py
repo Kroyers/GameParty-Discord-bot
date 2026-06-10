@@ -1,13 +1,73 @@
+import importlib.metadata
+import os
+import subprocess
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ─────────────────────────────────────────────
+#  DEPENDENCY BOOTSTRAP  (stdlib only above this point)
+# ─────────────────────────────────────────────
+
+DEPENDENCIES = {
+    "discord.py":    "2.4.0",
+    "aiohttp":       "3.9.0",
+    "cryptography":  "42.0.0",
+    "python-dotenv": "1.0.0",
+}
+
+def _ensure_dependencies() -> None:
+    """Installs missing or outdated dependencies, so a fresh setup or an
+    update that adds/raises a dependency starts on its own."""
+    def parse(version: str) -> tuple:
+        parts = []
+        for x in version.split("."):
+            if not x.isdigit():
+                break
+            parts.append(int(x))
+        return tuple(parts)
+
+    needed = []
+    for package, minimum in DEPENDENCIES.items():
+        try:
+            if parse(importlib.metadata.version(package)) < parse(minimum):
+                needed.append(f"{package}>={minimum}")
+        except importlib.metadata.PackageNotFoundError:
+            needed.append(f"{package}>={minimum}")
+    if not needed:
+        return
+    if os.environ.get("GP_DEPS_RETRY"):
+        # Already installed once and they are still not visible — don't loop.
+        print(f"ERROR: Dependencies still unavailable after install: {', '.join(needed)}. "
+              f"Run: pip install {' '.join(needed)}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Installing dependencies: {', '.join(needed)}")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
+                               "--no-warn-script-location", *needed])
+    except subprocess.CalledProcessError as e:
+        print(f"ERROR: Could not install dependencies ({e}). "
+              f"Run: pip install {' '.join(needed)}", file=sys.stderr)
+        sys.exit(1)
+
+    # A user site-packages dir created by pip just now is not on sys.path of
+    # the already-running interpreter — restart so the imports can see it.
+    print("Dependencies installed — restarting...")
+    os.environ["GP_DEPS_RETRY"] = "1"
+    if sys.platform == "win32":
+        subprocess.Popen([sys.executable] + sys.argv, env=os.environ)
+        sys.exit(0)
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+_ensure_dependencies()
+
 import discord
 from discord import app_commands
 from discord.ext import commands
-from lang import detect_lang
-import os
-import sys
-import subprocess
+from lang import detect_lang, t as _t
 import re
 import io
-import json
 import zipfile
 import urllib.request
 import urllib.error
@@ -16,10 +76,9 @@ from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime
 from dotenv import load_dotenv
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_FILE   = os.path.join(SCRIPT_DIR, ".env")
 load_dotenv(ENV_FILE)
-# místo příkazů interaktivní menu | místo reakcí tlačítka na role
+# místo reakcí tlačítka na role
 
 # ─────────────────────────────────────────────
 #  FIRST-RUN SETUP
@@ -59,23 +118,8 @@ if not _github_env:
 else:
     GITHUB_REPO = _github_env
 GIT_BRANCH  = "main"
-VERSION     = "0.2.5" #MAJOR . MINOR - new functions . PATCH - bugfix
-
-LOCALES_DIR = os.path.join(SCRIPT_DIR, "locales")
-
-def _load_locales() -> dict:
-    locales = {}
-    if os.path.isdir(LOCALES_DIR):
-        for fname in os.listdir(LOCALES_DIR):
-            if fname.endswith(".json"):
-                with open(os.path.join(LOCALES_DIR, fname), "r", encoding="utf-8") as f:
-                    locales[fname[:-5]] = json.load(f)
-    return locales
-
-_LOCALES = _load_locales()
-
-def _t(lang: str, key: str) -> str:
-    return _LOCALES.get(lang, {}).get(key) or _LOCALES.get("en", {}).get(key, key)
+VERSION     = "0.3.0" #MAJOR . MINOR - new functions . PATCH - bugfix
+STATUS_TEXT = "👥 {count}"   # bot presence text, {count} = humans on the server
 
 EXTENSIONS = [
     "lang",
@@ -84,6 +128,7 @@ EXTENSIONS = [
     "voice",
     "noti",
     "games",
+    "menu",
 ]
 
 # ─────────────────────────────────────────────
@@ -200,6 +245,7 @@ def check_for_updates() -> bool:
 
         with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
             prefix = z.namelist()[0].split("/")[0] + "/"
+            root   = os.path.realpath(SCRIPT_DIR)
             for item in z.namelist():
                 relative = item[len(prefix):]
                 if not relative:
@@ -208,6 +254,10 @@ def check_for_updates() -> bool:
                 if top in SKIP_ON_UPDATE:
                     continue
                 target = os.path.join(SCRIPT_DIR, relative)
+                # Zip Slip guard: never write outside the bot directory.
+                if not os.path.realpath(target).startswith(root + os.sep):
+                    log.warning(f"Skipping unsafe zip entry: {item}")
+                    continue
                 if item.endswith("/"):
                     os.makedirs(target, exist_ok=True)
                 else:
@@ -215,6 +265,8 @@ def check_for_updates() -> bool:
                     with z.open(item) as src, open(target, "wb") as dst:
                         dst.write(src.read())
 
+        # New or raised dependencies are handled by _ensure_dependencies()
+        # when the updated script starts after the restart.
         log.info(f"Updated to v{remote_version}.")
         return True
 
@@ -235,10 +287,33 @@ intents.members = True
 bot = commands.Bot(command_prefix=[], intents=intents, status=discord.Status.idle)
 
 
+async def _update_member_status():
+    """Sets the online presence with the current human member count."""
+    guild = bot.get_guild(GUILD_ID) if GUILD_ID else (bot.guilds[0] if bot.guilds else None)
+    if guild is None:
+        await bot.change_presence(status=discord.Status.online)
+        return
+    count = sum(1 for m in guild.members if not m.bot) or (guild.member_count or 0)
+    await bot.change_presence(
+        status=discord.Status.online,
+        activity=discord.CustomActivity(name=STATUS_TEXT.format(count=count)),
+    )
+
+
 @bot.event
 async def on_ready():
-    await bot.change_presence(status=discord.Status.online)
+    await _update_member_status()
     log.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
+
+
+@bot.event
+async def on_member_join(_member):
+    await _update_member_status()
+
+
+@bot.event
+async def on_member_remove(_member):
+    await _update_member_status()
 
 
 async def setup_hook_fn():
@@ -255,16 +330,7 @@ async def setup_hook_fn():
         log.info("Slash commands synced globally.")
 
 
-@bot.tree.command(name="info", description=app_commands.locale_str("Show information about the bot", key="cmd_info"))
-async def info_cmd(interaction: discord.Interaction):
-    lang  = detect_lang(interaction)
-    embed = discord.Embed(title=_t(lang, "info_title"), color=discord.Color.blurple())
-    embed.add_field(name=_t(lang, "info_version"), value=VERSION, inline=True)
-    if GITHUB_REPO:
-        embed.add_field(name=_t(lang, "info_github"), value=f"https://github.com/{GITHUB_REPO}", inline=True)
-    embed.add_field(name="—", value=_t(lang, "info_features"), inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
+# /info for users lives in the /menu (menu.py).
 
 @bot.tree.command(name="restart", description=app_commands.locale_str("Pull latest version from GitHub and restart the bot", key="cmd_restart"))
 @app_commands.default_permissions(administrator=True)

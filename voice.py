@@ -5,37 +5,15 @@ from discord.ext import commands
 import json
 import os
 import logging
-from lang import _get_user_lang, _get_explicit_lang, _save_user_lang, clear_user_lang, detect_lang
+from lang import (_get_user_lang, _get_explicit_lang, _save_user_lang, clear_user_lang,
+                  detect_lang, atomic_write_json, t, LOCALES, DEFAULT_LANG)
 
 SCRIPT_DIR       = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE      = os.path.join(SCRIPT_DIR, "config.json")
 VOICE_DATA_FILE  = os.path.join(SCRIPT_DIR, "voice_data.json")
 USERS_FILE       = os.path.join(SCRIPT_DIR, "users.json")
-LOCALES_DIR      = os.path.join(SCRIPT_DIR, "locales")
-DEFAULT_LANG     = "en"
 
 log = logging.getLogger(__name__)
-
-# ─────────────────────────────────────────────
-#  LOCALIZATION
-# ─────────────────────────────────────────────
-
-def _load_locales() -> dict:
-    locales = {}
-    for fname in os.listdir(LOCALES_DIR):
-        if fname.endswith(".json"):
-            code = fname[:-5]
-            with open(os.path.join(LOCALES_DIR, fname), "r", encoding="utf-8") as f:
-                locales[code] = json.load(f)
-    return locales
-
-LOCALES = _load_locales()
-
-def t(lang: str, key: str, **kwargs) -> str:
-    text = LOCALES.get(lang, {}).get(key)
-    if not text:
-        text = LOCALES.get(DEFAULT_LANG, {}).get(key, key)
-    return text.format(**kwargs) if kwargs else text
 
 # ─────────────────────────────────────────────
 #  STORAGE
@@ -48,8 +26,7 @@ def load_config() -> dict:
         return json.load(f)
 
 def save_config(data: dict) -> None:
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(CONFIG_FILE, data)
 
 def load_voice_data() -> dict:
     if not os.path.exists(VOICE_DATA_FILE):
@@ -58,8 +35,7 @@ def load_voice_data() -> dict:
         return json.load(f)
 
 def save_voice_data(data: dict) -> None:
-    with open(VOICE_DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(VOICE_DATA_FILE, data)
 
 def load_voice_prefs() -> dict:
     if not os.path.exists(USERS_FILE):
@@ -79,8 +55,7 @@ def save_voice_prefs(prefs: dict) -> None:
         if vp:
             data.setdefault(uid, {})["voice"] = vp
     data = {uid: rec for uid, rec in data.items() if rec}
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(USERS_FILE, data)
 
 
 # ─────────────────────────────────────────────
@@ -286,7 +261,15 @@ class RenameModal(discord.ui.Modal):
             return
 
         name = self.new_name.value.strip() or f"{interaction.user.display_name}'s channel"
-        await interaction.channel.edit(name=name)
+
+        # Discord allows only 2 channel renames per 10 minutes — don't let the
+        # interaction hang on the rate limit, tell the user instead.
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await asyncio.wait_for(interaction.channel.edit(name=name), timeout=5.0)
+        except asyncio.TimeoutError:
+            await interaction.followup.send(f"❌ {t(lang, 'voice_err_rename_ratelimit')}", ephemeral=True)
+            return
 
         prefs   = load_voice_prefs()
         user_id = str(interaction.user.id)
@@ -298,7 +281,7 @@ class RenameModal(discord.ui.Modal):
                 p.pop("name", None)
             save_voice_prefs(prefs)
 
-        await interaction.response.send_message(f"✅ {t(lang, 'voice_ok_renamed', name=name)}", ephemeral=True)
+        await interaction.followup.send(f"✅ {t(lang, 'voice_ok_renamed', name=name)}", ephemeral=True)
         log.info(f"Voice channel {channel_id} renamed to '{name}' by {interaction.user}.")
 
 
@@ -500,14 +483,21 @@ class UserActionView(discord.ui.View):
                 log.info(f"Voice channel {self.channel_id}: {target} banned by {interaction.user}.")
                 member = interaction.guild.get_member(target.id)
                 if member and member.voice and member.voice.channel and member.voice.channel.id == self.channel_id:
-                    await member.move_to(None)
+                    try:
+                        await member.move_to(None)
+                    except discord.HTTPException as e:
+                        log.warning(f"Voice channel {self.channel_id}: could not disconnect banned {target}: {e}")
 
         elif self.action == "kick":
             member = interaction.guild.get_member(target.id)
             if member and member.voice and member.voice.channel and member.voice.channel.id == self.channel_id:
-                await member.move_to(None)
-                msg = f"👢 {t(lang, 'voice_ok_kicked', mention=target.mention)}"
-                log.info(f"Voice channel {self.channel_id}: {target} kicked by {interaction.user}.")
+                try:
+                    await member.move_to(None)
+                    msg = f"👢 {t(lang, 'voice_ok_kicked', mention=target.mention)}"
+                    log.info(f"Voice channel {self.channel_id}: {target} kicked by {interaction.user}.")
+                except discord.HTTPException as e:
+                    msg = f"❌ {t(lang, 'voice_err_not_in_channel', mention=target.mention)}"
+                    log.warning(f"Voice channel {self.channel_id}: could not kick {target}: {e}")
             else:
                 msg = f"❌ {t(lang, 'voice_err_not_in_channel', mention=target.mention)}"
 
@@ -598,7 +588,10 @@ class RoleActionView(discord.ui.View):
                 log.info(f"Voice channel {self.channel_id}: role {target.name} banned by {interaction.user}.")
                 for member in list(channel.members):
                     if target in member.roles:
-                        await member.move_to(None)
+                        try:
+                            await member.move_to(None)
+                        except discord.HTTPException as e:
+                            log.warning(f"Voice channel {self.channel_id}: could not disconnect {member}: {e}")
 
         else:
             msg = "❌"
@@ -787,14 +780,21 @@ class VoiceCog(commands.Cog):
     @app_commands.command(name="voice-set", description=app_commands.locale_str("Set the trigger voice channel for auto-rooms", key="cmd_voice_set"))
     @app_commands.describe(channel=app_commands.locale_str("Voice channel that creates a new room on join", key="cmd_voice_set_channel"))
     @app_commands.default_permissions(administrator=True)
-    async def voice_set(self, interaction: discord.Interaction, channel: discord.VoiceChannel):
-        self.trigger_channel_id = channel.id
+    async def voice_set(self, interaction: discord.Interaction, channel: discord.VoiceChannel | None = None):
+        lang   = detect_lang(interaction)
+        target = channel
+        if target is None:
+            voice_state = getattr(interaction.user, "voice", None)
+            target = voice_state.channel if voice_state else None
+        if not isinstance(target, discord.VoiceChannel):
+            await interaction.response.send_message(f"❌ {t(lang, 'voice_err_no_voice')}", ephemeral=True)
+            return
+        self.trigger_channel_id = target.id
         cfg = load_config()
-        cfg["voice_trigger_id"] = channel.id
+        cfg["voice_trigger_id"] = target.id
         save_config(cfg)
-        lang = detect_lang(interaction)
-        await interaction.response.send_message(f"✅ {t(lang, 'voice_trigger_set', channel=channel.mention)}", ephemeral=True)
-        log.info(f"Voice trigger set to #{channel.name} ({channel.id}) by {interaction.user}.")
+        await interaction.response.send_message(f"✅ {t(lang, 'voice_trigger_set', channel=target.mention)}", ephemeral=True)
+        log.info(f"Voice trigger set to #{target.name} ({target.id}) by {interaction.user}.")
 
     @app_commands.command(name="voice-role", description=app_commands.locale_str("Set the role required to join auto-rooms", key="cmd_voice_role"))
     @app_commands.describe(role=app_commands.locale_str("Role that gets connect permission on every auto-room", key="cmd_voice_role_param"))
@@ -812,6 +812,15 @@ class VoiceCog(commands.Cog):
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         data = load_voice_data()
 
+        # ── Joined auto-room: record join order (persists across restarts) ──
+        if after.channel and str(after.channel.id) in data and (
+            before.channel is None or before.channel.id != after.channel.id
+        ):
+            order = data[str(after.channel.id)].setdefault("join_order", [])
+            if str(member.id) not in order:
+                order.append(str(member.id))
+                save_voice_data(data)
+
         # ── Left auto-room: delete if empty, or auto-transfer ownership ──
         if before.channel and str(before.channel.id) in data and (
             after.channel is None or after.channel.id != before.channel.id
@@ -820,6 +829,11 @@ class VoiceCog(commands.Cog):
             ch_data    = data[channel_id]
             channel    = before.channel
             humans     = [m for m in channel.members if not m.bot]
+
+            order = ch_data.get("join_order", [])
+            order_changed = str(member.id) in order
+            if order_changed:
+                order.remove(str(member.id))
 
             if not humans:
                 del data[channel_id]
@@ -831,7 +845,9 @@ class VoiceCog(commands.Cog):
                     log.warning(f"Could not delete voice channel {channel_id}: {e}")
 
             elif str(member.id) == ch_data.get("owner_id"):
-                new_owner = humans[0]
+                # Longest-present member (earliest in join order) becomes owner.
+                order_pos = {uid: i for i, uid in enumerate(order)}
+                new_owner = min(humans, key=lambda m: order_pos.get(str(m.id), len(order_pos)))
                 ch_data["owner_id"] = str(new_owner.id)
                 owner_lang = _get_user_lang(str(new_owner.id)) or DEFAULT_LANG
                 await apply_permissions(channel, ch_data, voice_role=get_voice_role(channel.guild))
@@ -841,6 +857,9 @@ class VoiceCog(commands.Cog):
                     lang=owner_lang,
                 )
                 log.info(f"Voice room {channel_id} ownership auto-transferred to {new_owner}.")
+
+            elif order_changed:
+                save_voice_data(data)
 
         # ── Joined trigger channel: create new auto-room ──────────────────
         if after.channel and after.channel.id == self.trigger_channel_id:
@@ -860,15 +879,19 @@ class VoiceCog(commands.Cog):
 
             # Create channel first (only needs Manage Channels).
             # Audio/video settings are copied from the trigger channel.
-            new_channel = await member.guild.create_voice_channel(
-                name               = name,
-                category           = after.channel.category,
-                bitrate            = trigger.bitrate,
-                user_limit         = user_limit,
-                rtc_region         = trigger.rtc_region,
-                video_quality_mode = trigger.video_quality_mode,
-                reason             = f"Auto-room for {member}",
-            )
+            try:
+                new_channel = await member.guild.create_voice_channel(
+                    name               = name,
+                    category           = after.channel.category,
+                    bitrate            = trigger.bitrate,
+                    user_limit         = user_limit,
+                    rtc_region         = trigger.rtc_region,
+                    video_quality_mode = trigger.video_quality_mode,
+                    reason             = f"Auto-room for {member}",
+                )
+            except Exception as e:
+                log.error(f"Could not create voice room for {member}: {e}")
+                return
 
             ch_data = {
                 "owner_id":           user_id,
@@ -878,14 +901,20 @@ class VoiceCog(commands.Cog):
                 "allowed_roles":      list(user_prefs.get("allowed_roles") or []) if r["allowed_roles"] else [],
                 "banned_users":       list(user_prefs.get("banned_users")  or []) if r["banned_users"]  else [],
                 "banned_roles":       list(user_prefs.get("banned_roles")  or []) if r["banned_roles"]  else [],
+                "join_order":         [user_id],
                 "control_message_id": None,
             }
+
+            # Register the room before the remaining setup steps, so the
+            # empty-room cleanup above can always find and delete it.
+            data[str(new_channel.id)] = ch_data
+            save_voice_data(data)
 
             voice_role  = member.guild.get_role(self.voice_role_id) if self.voice_role_id else None
             member_lang = _get_user_lang(user_id) or DEFAULT_LANG
             embed       = make_control_embed(member.guild, ch_data, member_lang)
 
-            ctrl_msg, *_ = await asyncio.gather(
+            results = await asyncio.gather(
                 new_channel.send(
                     content = f"👑 {member.mention}",
                     embed   = embed,
@@ -893,10 +922,29 @@ class VoiceCog(commands.Cog):
                 ),
                 apply_permissions(new_channel, ch_data, base_overwrites=trigger.overwrites, voice_role=voice_role),
                 member.move_to(new_channel),
+                return_exceptions=True,
             )
-            ch_data["control_message_id"] = str(ctrl_msg.id)
-            data[str(new_channel.id)] = ch_data
-            save_voice_data(data)
+            for result in results:
+                if isinstance(result, BaseException):
+                    log.warning(f"Voice room setup step failed ({new_channel.id}): {result}")
+
+            if not isinstance(results[0], BaseException):
+                ch_data["control_message_id"] = str(results[0].id)
+                save_voice_data(data)
+
+            # Member disconnected before move_to went through — the leave
+            # event will never fire for this room, so clean it up here.
+            move_failed = isinstance(results[2], BaseException)
+            if move_failed and not [m for m in new_channel.members if not m.bot]:
+                data.pop(str(new_channel.id), None)
+                save_voice_data(data)
+                try:
+                    await new_channel.delete(reason="Auto-room setup failed.")
+                except Exception:
+                    pass
+                log.info(f"Removed orphaned voice room {new_channel.id}.")
+                return
+
             log.info(f"Created voice room '{name}' ({new_channel.id}) for {member}.")
 
 

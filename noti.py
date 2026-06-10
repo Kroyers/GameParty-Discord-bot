@@ -2,7 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from datetime import datetime, timezone
-from lang import detect_lang
+from lang import detect_lang, atomic_write_json, t
 import json
 import os
 import logging
@@ -14,23 +14,8 @@ import aiohttp
 SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
 NOTI_FILE    = os.path.join(SCRIPT_DIR, "noti.json")
 CONFIG_FILE  = os.path.join(SCRIPT_DIR, "config.json")
-LOCALES_DIR  = os.path.join(SCRIPT_DIR, "locales")
 
 log = logging.getLogger(__name__)
-
-def _load_locales() -> dict:
-    locales = {}
-    for fname in os.listdir(LOCALES_DIR):
-        if fname.endswith(".json"):
-            with open(os.path.join(LOCALES_DIR, fname), "r", encoding="utf-8") as f:
-                locales[fname[:-5]] = json.load(f)
-    return locales
-
-LOCALES = _load_locales()
-
-def t(lang: str, key: str, **kwargs) -> str:
-    text = LOCALES.get(lang, LOCALES.get("en", {})).get(key, key)
-    return text.format(**kwargs) if kwargs else text
 
 # ─────────────────────────────────────────────
 #  STORAGE
@@ -43,8 +28,7 @@ def load_config() -> dict:
         return json.load(f)
 
 def save_config(data: dict) -> None:
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(CONFIG_FILE, data)
 
 def load_noti() -> dict:
     if not os.path.exists(NOTI_FILE):
@@ -57,8 +41,7 @@ def load_noti() -> dict:
     return data
 
 def save_noti(data: dict) -> None:
-    with open(NOTI_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    atomic_write_json(NOTI_FILE, data)
 
 def save_noti_section(section: str, section_data: dict) -> None:
     """Reload file and update only one section to avoid overwriting concurrent task changes."""
@@ -372,15 +355,13 @@ class NotiCog(commands.Cog):
     async def check_youtube(self):
         cfg          = load_config()
         video_ch_id  = cfg.get("noti_video_channel_id")
-        stream_ch_id = cfg.get("noti_stream_channel_id")
         yt_role_id   = cfg.get("noti_youtube_role_id")
+        if not video_ch_id:
+            return
         data         = load_noti()
         changed      = False
 
         for ch_id, info in data["youtube"].items():
-            if not video_ch_id:
-                continue
-
             recent = await yt_fetch_recent(self._session, self._yt_key, ch_id, max_results=1)
             if not recent:
                 continue
@@ -434,8 +415,11 @@ class NotiCog(commands.Cog):
             stream_id = stream["id"] if stream else None
             if stream_id == info.get("stream_id"):
                 if stream and stream.get("thumbnail_url"):
-                    info["stream_thumb"] = stream["thumbnail_url"]
-                    changed = True
+                    # Persist only on a real change — the live embed refresh
+                    # below runs every tick either way.
+                    if info.get("stream_thumb") != stream["thumbnail_url"]:
+                        info["stream_thumb"] = stream["thumbnail_url"]
+                        changed = True
                     msg_id = info.get("msg_id")
                     if msg_id:
                         channel = self.bot.get_channel(stream_ch_id)
@@ -614,32 +598,35 @@ class NotiCog(commands.Cog):
     @app_commands.command(name="noti-video", description=app_commands.locale_str("Set the Discord channel for all video notifications", key="cmd_noti_video"))
     @app_commands.describe(channel=app_commands.locale_str("Discord channel where new video notifications will be sent", key="cmd_noti_video_channel"))
     @app_commands.default_permissions(administrator=True)
-    async def noti_video(self, interaction: discord.Interaction, channel: discord.TextChannel):
+    async def noti_video(self, interaction: discord.Interaction, channel: discord.TextChannel | None = None):
+        target = channel or interaction.channel
         cfg = load_config()
-        cfg["noti_video_channel_id"] = channel.id
+        cfg["noti_video_channel_id"] = target.id
         save_config(cfg)
-        await interaction.response.send_message(f"✅ {t(detect_lang(interaction), 'noti_video_set', channel=channel.mention)}", ephemeral=True)
-        log.info(f"Noti video channel set to #{channel.name} ({channel.id}) by {interaction.user}.")
+        await interaction.response.send_message(f"✅ {t(detect_lang(interaction), 'noti_video_set', channel=target.mention)}", ephemeral=True)
+        log.info(f"Noti video channel set to #{target.name} ({target.id}) by {interaction.user}.")
 
     @app_commands.command(name="noti-stream", description=app_commands.locale_str("Set the Discord channel for all stream notifications", key="cmd_noti_stream"))
     @app_commands.describe(channel=app_commands.locale_str("Discord channel where live stream notifications will be sent", key="cmd_noti_stream_channel"))
     @app_commands.default_permissions(administrator=True)
-    async def noti_stream(self, interaction: discord.Interaction, channel: discord.TextChannel):
+    async def noti_stream(self, interaction: discord.Interaction, channel: discord.TextChannel | None = None):
+        target = channel or interaction.channel
         cfg = load_config()
-        cfg["noti_stream_channel_id"] = channel.id
+        cfg["noti_stream_channel_id"] = target.id
         save_config(cfg)
-        await interaction.response.send_message(f"✅ {t(detect_lang(interaction), 'noti_stream_set', channel=channel.mention)}", ephemeral=True)
-        log.info(f"Noti stream channel set to #{channel.name} ({channel.id}) by {interaction.user}.")
+        await interaction.response.send_message(f"✅ {t(detect_lang(interaction), 'noti_stream_set', channel=target.mention)}", ephemeral=True)
+        log.info(f"Noti stream channel set to #{target.name} ({target.id}) by {interaction.user}.")
 
     @app_commands.command(name="noti-rss-channel", description=app_commands.locale_str("Set the channel for RSS news notifications", key="cmd_noti_rss_channel"))
     @app_commands.describe(channel=app_commands.locale_str("Channel to post RSS notifications in", key="cmd_noti_rss_channel_param"))
     @app_commands.default_permissions(administrator=True)
-    async def noti_rss_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+    async def noti_rss_channel(self, interaction: discord.Interaction, channel: discord.TextChannel | None = None):
+        target = channel or interaction.channel
         cfg = load_config()
-        cfg["noti_rss_channel_id"] = channel.id
+        cfg["noti_rss_channel_id"] = target.id
         save_config(cfg)
-        await interaction.response.send_message(t(detect_lang(interaction), "noti_rss_channel_set", channel=channel.mention), ephemeral=True)
-        log.info(f"Noti RSS channel set to #{channel.name} ({channel.id}) by {interaction.user}.")
+        await interaction.response.send_message(t(detect_lang(interaction), "noti_rss_channel_set", channel=target.mention), ephemeral=True)
+        log.info(f"Noti RSS channel set to #{target.name} ({target.id}) by {interaction.user}.")
 
     @app_commands.command(name="noti-youtube-role", description=app_commands.locale_str("Set the role to mention for YouTube notifications", key="cmd_noti_youtube_role"))
     @app_commands.describe(role=app_commands.locale_str("Role to mention for YouTube videos and streams", key="cmd_noti_youtube_role_param"))
@@ -911,9 +898,12 @@ class NotiCog(commands.Cog):
     async def _rss_remove_ac(self, _: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         data = load_noti()
         return [
-            app_commands.Choice(name=info["name"], value=url)
+            app_commands.Choice(name=info["name"][:100], value=url)
             for url, info in data["rss"].items()
-            if current.lower() in info["name"].lower() or current.lower() in url.lower()
+            # Discord caps choice values at 100 chars — longer URLs can still
+            # be removed by pasting the full URL manually.
+            if len(url) <= 100
+            and (current.lower() in info["name"].lower() or current.lower() in url.lower())
         ][:25]
 
     @app_commands.command(name="noti-list", description=app_commands.locale_str("List all monitored YouTube channels and Twitch streamers", key="cmd_noti_list"))

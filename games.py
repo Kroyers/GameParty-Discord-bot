@@ -1,42 +1,43 @@
 import asyncio
+import datetime
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 import json
 import os
 import random
 import logging
-from lang import detect_lang, _get_user_lang
+from lang import detect_lang, _get_user_lang, atomic_write_json, t
 
-SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-LOCALES_DIR = os.path.join(SCRIPT_DIR, "locales")
-STATS_FILE  = os.path.join(SCRIPT_DIR, "rps_stats.json")
-_stats_lock = asyncio.Lock()
+SCRIPT_DIR       = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE      = os.path.join(SCRIPT_DIR, "config.json")
+USERS_FILE       = os.path.join(SCRIPT_DIR, "users.json")
+GUESS_STATE_FILE = os.path.join(SCRIPT_DIR, "guess_state.json")
+RPS_STATS_FILE   = os.path.join(SCRIPT_DIR, "rps_stats.json")
 
+_users_lock  = asyncio.Lock()
+_guess_ephs: dict[str, dict] = {}   # uid -> {"wh": Webhook, "id": int}
 log = logging.getLogger(__name__)
 
-
-def _load_locales() -> dict:
-    locales = {}
-    for fname in os.listdir(LOCALES_DIR):
-        if fname.endswith(".json"):
-            with open(os.path.join(LOCALES_DIR, fname), "r", encoding="utf-8") as f:
-                locales[fname[:-5]] = json.load(f)
-    return locales
+_GUESS_POINTS  = [10, 7, 5, 3]   # rank 0=1st, 1=2nd, 2=3rd, 3=4th
+_RPS_DAILY_CAP = 10
 
 
-LOCALES = _load_locales()
+def _pts_for_rank(rank: int) -> int:
+    if rank < len(_GUESS_POINTS):
+        return _GUESS_POINTS[rank]
+    return 1 if rank < 10 else 0
 
 
-def t(lang: str, key: str, **kwargs) -> str:
-    text = LOCALES.get(lang, LOCALES.get("en", {})).get(key, key)
-    return text.format(**kwargs) if kwargs else text
-
+# ─────────────────────────────────────────────
+#  LOCALIZATION  (t/LOCALES live in lang.py)
+# ─────────────────────────────────────────────
 
 def _bi_title(lang_c: str, lang_o: str, key: str) -> str:
     tc = t(lang_c, key)
     to = t(lang_o, key)
     return tc if lang_c == lang_o or tc == to else f"{tc} | {to}"
+
 
 def _bi(lang_c: str, lang_o: str, key: str, **kwargs) -> str:
     tc = t(lang_c, key, **kwargs)
@@ -46,26 +47,123 @@ def _bi(lang_c: str, lang_o: str, key: str, **kwargs) -> str:
     fc, fo = t(lang_c, "lang_flag"), t(lang_o, "lang_flag")
     return f"{fc} {tc}\n{fo} {to}"
 
-def _load_stats() -> dict:
-    if os.path.exists(STATS_FILE):
-        with open(STATS_FILE, "r", encoding="utf-8") as f:
+
+# ─────────────────────────────────────────────
+#  STORAGE HELPERS
+# ─────────────────────────────────────────────
+
+def _load_users() -> dict:
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
-def _save_stats(stats: dict) -> None:
-    with open(STATS_FILE, "w", encoding="utf-8") as f:
-        json.dump(stats, f, ensure_ascii=False, indent=2)
 
-async def _record_result(c_id: int, o_id: int, c_pick: str, o_pick: str) -> None:
-    async with _stats_lock:
-        stats = _load_stats()
+def _save_users(data: dict) -> None:
+    atomic_write_json(USERS_FILE, data, ensure_ascii=False)
+
+
+def _load_config() -> dict:
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def _save_config(cfg: dict) -> None:
+    atomic_write_json(CONFIG_FILE, cfg, ensure_ascii=False)
+
+
+def _load_guess_state() -> dict:
+    if os.path.exists(GUESS_STATE_FILE):
+        with open(GUESS_STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def _save_guess_state(state: dict) -> None:
+    atomic_write_json(GUESS_STATE_FILE, state, ensure_ascii=False)
+
+
+async def _migrate_rps_stats() -> None:
+    """One-time migration of the old rps_stats.json (wins/games per user)
+    into users.json. The player with the most wins on the old leaderboard
+    is credited with one season win."""
+    if not os.path.exists(RPS_STATS_FILE):
+        return
+    with open(RPS_STATS_FILE, "r", encoding="utf-8") as f:
+        old = json.load(f)
+
+    async with _users_lock:
+        users = _load_users()
+        for uid, data in old.items():
+            entry = users.setdefault(uid, {})
+            rps   = entry.setdefault("rps", {})
+            rps["wins"]  = rps.get("wins",  0) + data.get("wins",  0)
+            rps["games"] = rps.get("games", 0) + data.get("games", 0)
+
+        winners = []
+        if old:
+            top_wins = max(d.get("wins", 0) for d in old.values())
+            if top_wins > 0:
+                winners = [uid for uid, d in old.items() if d.get("wins", 0) == top_wins]
+                for uid in winners:
+                    entry = users.setdefault(uid, {})
+                    entry["seasons_won"] = entry.get("seasons_won", 0) + 1
+        _save_users(users)
+
+    os.replace(RPS_STATS_FILE, RPS_STATS_FILE + ".migrated")
+    log.info(f"Migrated rps_stats.json into users.json, old leaderboard winner(s): {winners}")
+
+
+def _today_utc() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+
+
+def _season_name(offset_months: int = 0) -> str:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    month = now.month - offset_months
+    year  = now.year
+    while month < 1:
+        month += 12
+        year  -= 1
+    return f"{month:02d}-{str(year)[2:]}"
+
+
+# ─────────────────────────────────────────────
+#  RPS STATS
+# ─────────────────────────────────────────────
+
+async def _record_rps_result(c_id: int, o_id: int, c_pick: str, o_pick: str) -> None:
+    today = _today_utc()
+    async with _users_lock:
+        users = _load_users()
         for uid in (str(c_id), str(o_id)):
-            stats.setdefault(uid, {"wins": 0, "games": 0})
-            stats[uid]["games"] += 1
+            entry = users.setdefault(uid, {})
+            rps   = entry.setdefault("rps", {})
+            rps.setdefault("wins", 0)
+            rps.setdefault("games", 0)
+            rps.setdefault("season_wins", 0)
+            rps.setdefault("season_games", 0)
+            rps.setdefault("season_pts", 0)
+            rps.setdefault("today_pts", 0)
+            rps.setdefault("today_date", "")
+            rps["games"] += 1
+            rps["season_games"] += 1
+            if rps["today_date"] != today:
+                rps["today_pts"]  = 0
+                rps["today_date"] = today
+
         if c_pick != o_pick:
-            winner = str(c_id) if _BEATS[c_pick] == o_pick else str(o_id)
-            stats[winner]["wins"] += 1
-        _save_stats(stats)
+            winner_id = str(c_id) if _BEATS[c_pick] == o_pick else str(o_id)
+            rps = users[winner_id]["rps"]
+            rps["wins"] += 1
+            rps["season_wins"] += 1
+            if rps["today_pts"] < _RPS_DAILY_CAP:
+                rps["today_pts"]  += 1
+                rps["season_pts"] += 1
+
+        _save_users(users)
 
 
 def _rps_result_line(lang: str, c_id: int, o_id: int, c_pick: str, o_pick: str) -> str:
@@ -77,7 +175,6 @@ def _rps_result_line(lang: str, c_id: int, o_id: int, c_pick: str, o_pick: str) 
 
 
 async def _eph_edit(eph: dict | None, **kwargs) -> None:
-    """Edit a stored ephemeral. eph = {"wh": Webhook, "id": int}"""
     if not eph:
         return
     try:
@@ -98,7 +195,6 @@ _games: dict[int, dict] = {}
 
 
 async def _pick_timeout(client: discord.Client, msg_id: int) -> None:
-    """Called 120 s after both players get pick buttons — cleans up if nobody picked."""
     await asyncio.sleep(120)
     game = _games.pop(msg_id, None)
     if not game:
@@ -164,15 +260,17 @@ async def _resolve_rps(client: discord.Client, msg_id: int) -> None:
 
     embed = discord.Embed(
         title=_bi_title(lang_c, lang_o, "rps_title"),
-        description=result,
+        description=(
+            f"{result}\n\n"
+            f"{_EMOJI[c_pick]} **{c_name}**"
+            f" · **{score_c} : {score_o}** · "
+            f"**{o_name}** {_EMOJI[o_pick]}"
+        ),
         color=discord.Color.gold(),
     )
-    embed.add_field(name=c_name, value=f"{_EMOJI[c_pick]} {t(lang_c, f'rps_{c_pick}')}", inline=True)
-    embed.add_field(name="VS",   value=f"**{score_c} : {score_o}**", inline=True)
-    embed.add_field(name=o_name, value=f"{_EMOJI[o_pick]} {t(lang_o, f'rps_{o_pick}')}", inline=True)
 
     await msg.edit(embed=embed, view=None)
-    await _record_result(c_id, o_id, c_pick, o_pick)
+    await _record_rps_result(c_id, o_id, c_pick, o_pick)
 
     ephs = game.get("ephemerals", {})
     for uid, player_lang, target_id, target_lang in (
@@ -188,9 +286,170 @@ async def _resolve_rps(client: discord.Client, msg_id: int) -> None:
         rematch_view = RpsEphemeralRematchView(
             uid, target_id, player_lang, target_lang, ephs, msg, new_sc, new_so
         )
+        eph["view"] = rematch_view
         await _eph_edit(eph, content=f"🔄 **{target_name}**", view=rematch_view)
 
     log.info(f"RPS resolved (msg {msg_id}): <@{c_id}> {c_pick} vs {o_pick} <@{o_id}>")
+
+
+# ─────────────────────────────────────────────
+#  GUESS MODAL + VIEW
+# ─────────────────────────────────────────────
+
+def _build_guess_embed(uid: str, state: dict, lang: str, status: str | None = None) -> discord.Embed:
+    solvers      = state.get("solvers", {})
+    attempts_made = state.get("attempts", {}).get(uid, 0)
+    solved       = uid in solvers
+
+    if status:
+        user_line = status
+    elif solved:
+        user_line = t(lang, "guess_already_solved", attempts=solvers[uid]["attempts"])
+    elif attempts_made > 0:
+        user_line = t(lang, "guess_in_progress", attempts=attempts_made)
+    else:
+        user_line = t(lang, "guess_ongoing")
+
+    ranked = sorted(solvers.items(), key=lambda x: (x[1]["attempts"], x[1]["solved_at"]))
+    medals = ["🥇", "🥈", "🥉"]
+    parts  = [user_line]
+    if ranked:
+        parts.append("")
+        parts.append(t(lang, "guess_standings"))
+        for i, (s_uid, data) in enumerate(ranked[:5]):
+            medal = medals[i] if i < 3 else f"{i + 1}."
+            parts.append(
+                f"{medal} <@{s_uid}> — {data['attempts']} {t(lang, 'guess_attempts')}"
+            )
+
+    return discord.Embed(
+        title=t(lang, "guess_title"),
+        description="\n".join(parts),
+        color=discord.Color.green() if solved else discord.Color.blurple(),
+    )
+
+
+async def _update_guess_eph(
+    interaction: discord.Interaction,
+    uid: str,
+    embed: discord.Embed,
+    solved: bool = False,
+) -> None:
+    view = GuessEphemeralView(solved=solved)
+    eph  = _guess_ephs.get(uid)
+    if eph:
+        try:
+            await eph["wh"].edit_message(eph["id"], embed=embed, view=view)
+            await interaction.response.defer()
+            return
+        except Exception:
+            _guess_ephs.pop(uid, None)
+
+    await interaction.response.defer(ephemeral=True)
+    msg = await interaction.followup.send(embed=embed, view=view, ephemeral=True, wait=True)
+    _guess_ephs[uid] = {"wh": interaction.followup, "id": msg.id}
+
+
+class GuessModal(discord.ui.Modal):
+    def __init__(self, lang: str):
+        super().__init__(title=t(lang, "guess_modal_title"))
+        self.lang = lang
+        self.number_input = discord.ui.TextInput(
+            label=t(lang, "guess_modal_label"),
+            placeholder="1 – 9999",
+            min_length=1,
+            max_length=4,
+        )
+        self.add_item(self.number_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        lang = _get_user_lang(str(interaction.user.id)) or self.lang
+        uid  = str(interaction.user.id)
+
+        try:
+            guess = int(self.number_input.value.strip())
+        except ValueError:
+            await interaction.response.send_message(t(lang, "guess_out_of_range"), ephemeral=True)
+            return
+
+        if not (1 <= guess <= 9999):
+            await interaction.response.send_message(t(lang, "guess_out_of_range"), ephemeral=True)
+            return
+
+        state = _load_guess_state()
+        today = _today_utc()
+        if state.get("date") != today or not state.get("number"):
+            await interaction.response.send_message(t(lang, "guess_no_active"), ephemeral=True)
+            return
+
+        if uid in state.get("solvers", {}):
+            embed = _build_guess_embed(uid, state, lang)
+            await _update_guess_eph(interaction, uid, embed, solved=True)
+            return
+
+        attempts = state.setdefault("attempts", {})
+        attempts[uid] = attempts.get(uid, 0) + 1
+        current = attempts[uid]
+        number  = state["number"]
+
+        if guess == number:
+            state.setdefault("solvers", {})[uid] = {
+                "attempts": current,
+                "solved_at": interaction.created_at.timestamp(),
+            }
+            _save_guess_state(state)
+            status = t(lang, "guess_correct", attempts=current)
+            solved = True
+            log.info(f"Guess solved by {interaction.user} in {current} attempts")
+        elif guess < number:
+            _save_guess_state(state)
+            status = t(lang, "guess_too_low", attempt=current)
+            solved = False
+        else:
+            _save_guess_state(state)
+            status = t(lang, "guess_too_high", attempt=current)
+            solved = False
+
+        embed = _build_guess_embed(uid, state, lang, status=status)
+        await _update_guess_eph(interaction, uid, embed, solved=solved)
+
+
+class GuessEphemeralView(discord.ui.View):
+    def __init__(self, solved: bool = False):
+        super().__init__(timeout=None)
+        if solved:
+            for child in self.children:
+                child.disabled = True
+
+    @discord.ui.button(
+        label="Guess",
+        style=discord.ButtonStyle.primary,
+        emoji="🔢",
+        custom_id="guess_eph_btn",
+    )
+    async def guess_button(self, interaction: discord.Interaction, _: discord.ui.Button):
+        state = _load_guess_state()
+        today = _today_utc()
+        lang  = detect_lang(interaction)
+        uid   = str(interaction.user.id)
+
+        if state.get("date") != today or not state.get("number"):
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title=t(lang, "guess_title"),
+                    description=t(lang, "guess_no_active"),
+                    color=discord.Color.red(),
+                ),
+                view=None,
+            )
+            return
+
+        if uid in state.get("solvers", {}):
+            embed = _build_guess_embed(uid, state, lang)
+            await interaction.response.edit_message(embed=embed, view=GuessEphemeralView(solved=True))
+            return
+
+        await interaction.response.send_modal(GuessModal(lang))
 
 
 # ─────────────────────────────────────────────
@@ -198,8 +457,6 @@ async def _resolve_rps(client: discord.Client, msg_id: int) -> None:
 # ─────────────────────────────────────────────
 
 class RpsEphemeralPickView(discord.ui.View):
-    """Ephemeral ✊🖐️✌️ pick buttons shown in each player's private message."""
-
     def __init__(self, msg_id: int, player_id: int, lang: str):
         super().__init__(timeout=None)
         self.msg_id    = msg_id
@@ -239,8 +496,6 @@ class RpsEphemeralPickView(discord.ui.View):
 
 
 class RpsEphemeralRematchView(discord.ui.View):
-    """Ephemeral rematch button sent to each player after the game resolves."""
-
     def __init__(self, clicker_id: int, target_id: int, lang_c: str, lang_o: str,
                  ephemerals: dict, public_msg: discord.Message, score_c: int, score_o: int):
         super().__init__(timeout=60)
@@ -274,19 +529,22 @@ class RpsEphemeralRematchView(discord.ui.View):
             await interaction.response.send_message("❌", ephemeral=True)
             return
 
-        # Update own ephemeral to "waiting for accept"
         await interaction.response.edit_message(
             content=f"⏳ {t(self.lang_c, 'rps_wait_accept', opponent=target.display_name)}",
             view=None
         )
 
-        # New ephemerals dict — update clicker's webhook, keep target's entry
+        target_eph = self.ephemerals.get(self.target_id)
+        if target_eph:
+            old_view = target_eph.get("view")
+            if old_view:
+                old_view.stop()
+
         new_ephs = dict(self.ephemerals)
         clicker_eph = new_ephs.get(self.clicker_id)
         if clicker_eph:
             new_ephs[self.clicker_id] = {"wh": interaction.followup, "id": clicker_eph["id"]}
 
-        # Send accept/decline to target's ephemeral
         accept_view = RpsEphemeralAcceptView(
             self.clicker_id, self.target_id, self.lang_c, self.lang_o,
             new_ephs, self.public_msg, self.score_c, self.score_o
@@ -312,8 +570,6 @@ class RpsEphemeralRematchView(discord.ui.View):
 
 
 class RpsEphemeralAcceptView(discord.ui.View):
-    """Ephemeral accept/decline for rematches — shown in opponent's private message."""
-
     def __init__(self, challenger_id: int, opponent_id: int, lang_c: str, lang_o: str,
                  ephemerals: dict, public_msg: discord.Message, score_c: int, score_o: int):
         super().__init__(timeout=60)
@@ -343,7 +599,6 @@ class RpsEphemeralAcceptView(discord.ui.View):
             return
         self.stop()
 
-        # Update opponent's ephemeral to pick buttons
         opp_pick = RpsEphemeralPickView(self.public_msg.id, self.opponent_id, self.lang_o)
         await interaction.response.edit_message(
             content=f"🎯 {t(self.lang_o, 'rps_choose')}", view=opp_pick
@@ -354,7 +609,6 @@ class RpsEphemeralAcceptView(discord.ui.View):
         }
         game["ephemerals"] = self.ephemerals
 
-        # Update challenger's ephemeral to pick buttons
         c_pick = RpsEphemeralPickView(self.public_msg.id, self.challenger_id, self.lang_c)
         await _eph_edit(self.ephemerals.get(self.challenger_id),
                         content=f"🎯 {t(self.lang_c, 'rps_choose')}", view=c_pick)
@@ -383,12 +637,10 @@ class RpsEphemeralAcceptView(discord.ui.View):
 
 
 # ─────────────────────────────────────────────
-#  PUBLIC ACCEPT VIEW (initial challenge)
+#  PUBLIC ACCEPT VIEW
 # ─────────────────────────────────────────────
 
 class RpsAcceptView(discord.ui.View):
-    """Initial challenge on public message — only the opponent can accept or decline."""
-
     def __init__(self, challenger_id: int, opponent_id: int, lang_c: str, lang_o: str):
         super().__init__(timeout=60)
         self.challenger_id = challenger_id
@@ -414,7 +666,6 @@ class RpsAcceptView(discord.ui.View):
             return
         self.stop()
 
-        # Update public message to pick prompt (no buttons)
         embed = discord.Embed(
             title=_bi_title(self.lang_c, self.lang_o, "rps_title"),
             description=_bi(self.lang_c, self.lang_o, "rps_pick_prompt",
@@ -424,7 +675,6 @@ class RpsAcceptView(discord.ui.View):
         )
         await interaction.response.edit_message(content=None, embed=embed, view=None)
 
-        # Send opponent's ephemeral with pick buttons
         opp_pick = RpsEphemeralPickView(interaction.message.id, self.opponent_id, self.lang_o)
         o_eph = await interaction.followup.send(
             content=f"🎯 {t(self.lang_o, 'rps_choose')}",
@@ -432,7 +682,6 @@ class RpsAcceptView(discord.ui.View):
         )
         game["ephemerals"][self.opponent_id] = {"wh": interaction.followup, "id": o_eph.id}
 
-        # Update challenger's ephemeral to pick buttons
         c_pick = RpsEphemeralPickView(interaction.message.id, self.challenger_id, self.lang_c)
         await _eph_edit(game["ephemerals"].get(self.challenger_id),
                         content=f"🎯 {t(self.lang_c, 'rps_choose')}", view=c_pick)
@@ -476,6 +725,182 @@ class GamesCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    async def cog_load(self):
+        await _migrate_rps_stats()
+        self.bot.add_view(GuessEphemeralView())
+        self.daily_guess.start()
+
+    async def cog_unload(self):
+        self.daily_guess.cancel()
+
+    # ── GUESS GAME TASK ───────────────────────
+
+    @tasks.loop(time=datetime.time(0, 0, 0, tzinfo=datetime.timezone.utc))
+    async def daily_guess(self):
+        await self._rollover_guess()
+
+    @daily_guess.before_loop
+    async def before_daily_guess(self):
+        await self.bot.wait_until_ready()
+        # Recovery after downtime: closes out a stale game (results, points,
+        # missed season reset) instead of silently dropping it.
+        await self._rollover_guess()
+
+    async def _rollover_guess(self):
+        state = _load_guess_state()
+        today = _today_utc()
+        if state.get("date") == today and state.get("number"):
+            return
+
+        cfg   = _load_config()
+        ch_id = cfg.get("game_channel_id")
+        ch    = self.bot.get_channel(ch_id) if ch_id else None
+
+        embeds = []
+        _guess_ephs.clear()
+
+        results_embed = None
+        if state.get("number"):
+            if ch:
+                results_embed = self._build_results_embed(state, ch)
+            if state.get("solvers"):
+                await self._award_guess_points(state)
+
+        if results_embed:
+            # Yesterday's results and the new-game announcement in one embed.
+            results_embed.description += f"\n\n{t('en', 'guess_start')}"
+            embeds.append(results_embed)
+
+        # Season reset whenever a month boundary was crossed — also catches
+        # a 1st-of-month midnight missed while the bot was offline.
+        if state.get("date") and state["date"][:7] != today[:7]:
+            reset_embed = await self._auto_season_reset(ch)
+            embeds.append(reset_embed)
+
+        number    = random.randint(1, 9999)
+        new_state = {"date": today, "number": number, "attempts": {}, "solvers": {}}
+        _save_guess_state(new_state)
+
+        if ch:
+            if not results_embed:
+                embeds.append(discord.Embed(
+                    title=t("en", "guess_title"),
+                    description=t("en", "guess_start"),
+                    color=discord.Color.blurple(),
+                ))
+            await ch.send(embeds=embeds)
+        log.info(f"Guess game started: number={number}, date={today}")
+
+    async def _auto_season_reset(self, ch: discord.TextChannel | None) -> discord.Embed:
+        guild = getattr(ch, "guild", None)
+        async with _users_lock:
+            users = _load_users()
+
+            rows = []
+            for uid, entry in users.items():
+                rps   = entry.get("rps",   {})
+                guess = entry.get("guess", {})
+                total = rps.get("season_pts", 0) + guess.get("season_pts", 0)
+                if total > 0:
+                    rows.append((uid, total, guess.get("season_pts", 0),
+                                 guess.get("season_games", 0),
+                                 rps.get("season_pts", 0), rps.get("season_games", 0)))
+
+            rows.sort(key=lambda x: x[1], reverse=True)
+
+            if rows:
+                top_total = rows[0][1]
+                for uid, total, *_ in rows:
+                    if total != top_total:
+                        break
+                    winner = users.setdefault(uid, {})
+                    winner["seasons_won"] = winner.get("seasons_won", 0) + 1
+
+            for entry in users.values():
+                for section in ("rps", "guess"):
+                    s = entry.setdefault(section, {})
+                    s["season_pts"]   = 0
+                    s["season_games"] = 0
+                    if section == "rps":
+                        s["season_wins"] = 0
+            _save_users(users)
+
+        medals = ["🥇", "🥈", "🥉"]
+        if rows:
+            lines = []
+            for i, (uid, total, gpts, gg, rpts, rg) in enumerate(rows[:10]):
+                member = guild.get_member(int(uid)) if guild else None
+                name   = member.display_name if member else f"<@{uid}>"
+                medal  = medals[i] if i < 3 else f"{i + 1}."
+                lines.append(f"{medal} **{name}** — **{total}** b · 🔢 {gpts}/{gg} · ✊ {rpts}/{rg}")
+            desc = "\n".join(lines)
+        else:
+            desc = t("en", "season_auto_reset_empty")
+
+        log.info(f"Auto season reset ({_season_name(offset_months=1)}). Top: {rows[0] if rows else None}")
+        return discord.Embed(
+            title=t("en", "season_auto_reset_title", season=_season_name(offset_months=1)),
+            description=desc,
+            color=discord.Color.purple(),
+        )
+
+    def _build_results_embed(self, state: dict, ch: discord.TextChannel) -> discord.Embed | None:
+        solvers = state.get("solvers", {})
+        number  = state.get("number")
+        if not number:
+            return None
+
+        guild  = getattr(ch, "guild", None)
+        medals = ["🥇", "🥈", "🥉"]
+
+        ranked = sorted(
+            solvers.items(),
+            key=lambda x: (x[1]["attempts"], x[1]["solved_at"])
+        )
+
+        if ranked:
+            lines = []
+            for i, (uid, data) in enumerate(ranked):
+                member = guild.get_member(int(uid)) if guild else None
+                name   = member.display_name if member else f"<@{uid}>"
+                medal  = medals[i] if i < 3 else f"{i + 1}."
+                pts    = _pts_for_rank(i)
+                solved = datetime.datetime.fromtimestamp(
+                    data["solved_at"], tz=datetime.timezone.utc
+                ).strftime("%H:%M UTC")
+                lines.append(
+                    f"{medal} **{name}** — {data['attempts']} {t('en', 'guess_attempts')} +{pts} {t('en', 'guess_pts_label')}"
+                )
+            desc = "\n".join(lines)
+        else:
+            desc = t("en", "guess_no_solvers")
+
+        return discord.Embed(
+            title=t("en", "guess_results_title", number=number),
+            description=desc,
+            color=discord.Color.blurple(),
+        )
+
+    async def _award_guess_points(self, state: dict) -> None:
+        solvers = state.get("solvers", {})
+        ranked  = sorted(
+            solvers.items(),
+            key=lambda x: (x[1]["attempts"], x[1]["solved_at"])
+        )
+        async with _users_lock:
+            users = _load_users()
+            for i, (uid, _) in enumerate(ranked):
+                pts   = _pts_for_rank(i)
+                entry = users.setdefault(uid, {})
+                guess = entry.setdefault("guess", {})
+                guess["season_pts"]   = guess.get("season_pts",   0) + pts
+                guess["season_games"] = guess.get("season_games", 0) + 1
+                guess["total_pts"]    = guess.get("total_pts",    0) + pts
+                guess["total_games"]  = guess.get("total_games",  0) + 1
+            _save_users(users)
+
+    # ── SLASH COMMANDS ────────────────────────
+
     @app_commands.command(
         name="rps",
         description=app_commands.locale_str("Challenge someone to Rock Paper Scissors", key="cmd_rps"),
@@ -507,7 +932,6 @@ class GamesCog(commands.Cog):
         await interaction.response.send_message(content=opponent.mention, embed=embed, view=view)
         msg = await interaction.original_response()
 
-        # Send challenger's waiting ephemeral
         c_eph = await interaction.followup.send(
             content=f"⏳ {t(lang_c, 'rps_wait_accept', opponent=opponent.display_name)}",
             ephemeral=True, wait=True
@@ -552,34 +976,109 @@ class GamesCog(commands.Cog):
 
     @app_commands.command(
         name="leaderboard",
-        description=app_commands.locale_str("Show RPS leaderboard", key="cmd_leaderboard"),
+        description=app_commands.locale_str("Show the combined season leaderboard", key="cmd_leaderboard"),
     )
     async def leaderboard(self, interaction: discord.Interaction):
         lang  = detect_lang(interaction)
-        stats = _load_stats()
-        if not stats:
+        users = _load_users()
+
+        rows = []
+        for uid, entry in users.items():
+            rps   = entry.get("rps",   {})
+            guess = entry.get("guess", {})
+            rps_pts    = rps.get("season_pts",   0)
+            guess_pts  = guess.get("season_pts", 0)
+            total      = rps_pts + guess_pts
+            if total == 0 and rps.get("season_games", 0) == 0 and guess.get("season_games", 0) == 0:
+                continue
+            rows.append((uid, entry, total, rps_pts, guess_pts, rps, guess))
+
+        if not rows:
             await interaction.response.send_message(t(lang, "leaderboard_empty"), ephemeral=True)
             return
 
-        top    = sorted(stats.items(), key=lambda x: (x[1]["wins"], -x[1]["games"]), reverse=True)[:10]
+        rows.sort(key=lambda x: x[2], reverse=True)
+
         medals = ["🥇", "🥈", "🥉"]
         lines  = []
-        for i, (uid, data) in enumerate(top):
+        for i, (uid, entry, total, rps_pts, guess_pts, rps, guess) in enumerate(rows[:10]):
             member = interaction.guild.get_member(int(uid)) if interaction.guild else None
             name   = member.display_name if member else f"<@{uid}>"
-            rank   = medals[i] if i < 3 else f"{i + 1}."
-            lines.append(f"{rank} **{name}** — {data['wins']} {t(lang, 'leaderboard_wins')} / {data['games']} {t(lang, 'leaderboard_games')}")
+            medal  = medals[i] if i < 3 else f"{i + 1}."
+            sw = entry.get("seasons_won", 0)
+            rg = rps.get("season_games",   0)
+            gg = guess.get("season_games", 0)
+            lines.append(
+                f"{medal} **{name}** [{sw}] — **{total}** {t(lang, 'leaderboard_pts')}"
+                f" · 🔢 {guess_pts}/{gg} · ✊ {rps_pts}/{rg}"
+            )
 
         embed = discord.Embed(
-            title=t(lang, "leaderboard_title"),
+            title=t(lang, "leaderboard_title", season=_season_name()),
             description="\n".join(lines),
             color=discord.Color.gold(),
         )
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(
+        name="game-set",
+        description=app_commands.locale_str("Set the channel for the daily number guessing game", key="cmd_game_set"),
+    )
+    @app_commands.describe(
+        channel=app_commands.locale_str("Channel to use (leave empty for current channel)", key="cmd_game_set_channel"),
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def game_set(self, interaction: discord.Interaction, channel: discord.TextChannel | None = None):
+        lang   = detect_lang(interaction)
+        target = channel or interaction.channel
+        cfg    = _load_config()
+        cfg["game_channel_id"] = target.id
+        _save_config(cfg)
+        await interaction.response.send_message(
+            t(lang, "game_channel_set", channel=target.mention), ephemeral=True
+        )
+        log.info(f"Guess channel set to #{target.name} by {interaction.user}")
+
+        # Announce the current game right away so the channel isn't empty
+        # until the next midnight rollover.
+        try:
+            state = _load_guess_state()
+            if state.get("date") != _today_utc() or not state.get("number"):
+                await self._rollover_guess()
+            else:
+                await target.send(embed=discord.Embed(
+                    title=t("en", "guess_title"),
+                    description=t("en", "guess_start"),
+                    color=discord.Color.blurple(),
+                ))
+        except Exception as e:
+            log.warning(f"Could not announce current guess game in #{target.name}: {e}")
+
+    @app_commands.command(
+        name="guess",
+        description=app_commands.locale_str("Show today's guess game and your current status", key="cmd_guess_show"),
+    )
+    async def guess_cmd(self, interaction: discord.Interaction):
+        lang  = detect_lang(interaction)
+        state = _load_guess_state()
+        today = _today_utc()
+        uid   = str(interaction.user.id)
+
+        if state.get("date") != today or not state.get("number"):
+            await interaction.response.send_message(t(lang, "guess_no_active"), ephemeral=True)
+            return
+
+        solved = uid in state.get("solvers", {})
+        embed  = _build_guess_embed(uid, state, lang)
+        view   = GuessEphemeralView(solved=solved)
+
+        await interaction.response.defer(ephemeral=True)
+        msg = await interaction.followup.send(embed=embed, view=view, ephemeral=True, wait=True)
+        _guess_ephs[uid] = {"wh": interaction.followup, "id": msg.id}
+
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         if isinstance(error, app_commands.CommandOnCooldown):
-            lang = detect_lang(interaction)
+            lang  = detect_lang(interaction)
             retry = round(error.retry_after)
             await interaction.response.send_message(t(lang, "rps_cooldown", seconds=retry), ephemeral=True)
 
