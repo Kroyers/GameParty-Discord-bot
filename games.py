@@ -476,21 +476,28 @@ class RpsEphemeralPickView(discord.ui.View):
         if game[role_key]:
             await interaction.response.send_message(t(lang, "rps_already_picked"), ephemeral=True)
             return
+        # Acknowledge first — when the ack doesn't make it in time (slow
+        # network, Discord's 3s limit), leave the game state untouched so the
+        # next click is a clean retry instead of "already picked".
+        try:
+            await interaction.response.edit_message(content=f"✅ {t(lang, 'rps_waiting')}", view=None)
+        except discord.HTTPException as e:
+            log.warning(f"RPS pick ack failed for {interaction.user}: {e}")
+            return
         game[role_key] = choice
         self.stop()
-        await interaction.response.edit_message(content=f"✅ {t(lang, 'rps_waiting')}", view=None)
         if game["challenger_pick"] and game["opponent_pick"]:
             await _resolve_rps(interaction.client, self.msg_id)
 
-    @discord.ui.button(emoji="✊", style=discord.ButtonStyle.grey)
+    @discord.ui.button(emoji="✊", style=discord.ButtonStyle.grey, custom_id="rps_pick_rock")
     async def rock(self, i: discord.Interaction, _: discord.ui.Button):
         await self._pick(i, ROCK)
 
-    @discord.ui.button(emoji="🖐️", style=discord.ButtonStyle.grey)
+    @discord.ui.button(emoji="🖐️", style=discord.ButtonStyle.grey, custom_id="rps_pick_paper")
     async def paper(self, i: discord.Interaction, _: discord.ui.Button):
         await self._pick(i, PAPER)
 
-    @discord.ui.button(emoji="✌️", style=discord.ButtonStyle.grey)
+    @discord.ui.button(emoji="✌️", style=discord.ButtonStyle.grey, custom_id="rps_pick_scissors")
     async def scissors(self, i: discord.Interaction, _: discord.ui.Button):
         await self._pick(i, SCISSORS)
 
@@ -515,7 +522,7 @@ class RpsEphemeralRematchView(discord.ui.View):
         await _eph_edit(self.ephemerals.get(self.clicker_id),
                         content=t(self.lang_c, "rps_timeout"), view=None)
 
-    @discord.ui.button(style=discord.ButtonStyle.grey, emoji="🔄")
+    @discord.ui.button(style=discord.ButtonStyle.grey, emoji="🔄", custom_id="rps_rematch")
     async def rematch(self, interaction: discord.Interaction, _: discord.ui.Button):
         if interaction.user.id != self.clicker_id:
             await interaction.response.defer()
@@ -732,6 +739,27 @@ class GamesCog(commands.Cog):
 
     async def cog_unload(self):
         self.daily_guess.cancel()
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        """Safety net for stale RPS buttons. RPS games live only in memory, so
+        after a bot restart clicks on old messages have no view to answer them
+        and Discord shows "interaction failed" — answer them here instead."""
+        if interaction.type != discord.InteractionType.component:
+            return
+        custom_id = (interaction.data or {}).get("custom_id", "")
+        if not custom_id.startswith(("rps_", "eph_")):
+            return
+        # Give a live view (or a slow ack in flight) a moment first.
+        await asyncio.sleep(2.0)
+        if interaction.response.is_done():
+            return
+        lang = detect_lang(interaction)
+        try:
+            await interaction.response.edit_message(content=t(lang, "rps_timeout"), embed=None, view=None)
+        except discord.HTTPException:
+            pass
+        log.info(f"Stale RPS component '{custom_id}' answered for {interaction.user}.")
 
     # ── GUESS GAME TASK ───────────────────────
 
