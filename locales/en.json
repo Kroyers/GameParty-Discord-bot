@@ -220,6 +220,7 @@
   "rps_not_your_game": "This challenge is not for you.",
   "rps_declined": "{opponent} declined the challenge.",
   "rps_timeout": "The challenge timed out.",
+  "rps_not_for_you": "This challenge isn't for you.",
   "rps_result_win": "{winner} wins!",
   "rps_result_draw": "It's a draw!",
   "rps_err_bot": "You can't challenge a bot.",

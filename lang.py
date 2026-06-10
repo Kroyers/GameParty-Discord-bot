@@ -74,6 +74,7 @@ def _get_lang_cache() -> dict:
                 uid: {"lang": entry.get("lang"), "lang_explicit": entry.get("lang_explicit", False)}
                 for uid, entry in data.items()
             }
+            log.debug(f"Lang cache loaded ({len(_lang_cache)} users).")
     return _lang_cache
 
 def _get_user_lang(user_id: str) -> str | None:
@@ -99,6 +100,7 @@ def _save_user_lang(user_id: str, lang: str, explicit: bool = False) -> None:
         entry.pop("lang_explicit", None)
     atomic_write_json(USERS_FILE, data)
     _get_lang_cache()[user_id] = {"lang": lang, "lang_explicit": explicit}
+    log.debug(f"User lang saved: {user_id} -> {lang} (explicit={explicit})")
 
 def clear_user_lang(user_id: str) -> None:
     """Remove explicit lang override — keeps the cached value so panels still have a fallback."""
@@ -114,6 +116,7 @@ def clear_user_lang(user_id: str) -> None:
     cache = _get_lang_cache()
     if user_id in cache:
         cache[user_id]["lang_explicit"] = False
+    log.debug(f"User lang reset to auto: {user_id}")
 
 def detect_lang(interaction: discord.Interaction) -> str:
     user_id = str(interaction.user.id)

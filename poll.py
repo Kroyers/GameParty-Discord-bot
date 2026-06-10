@@ -124,7 +124,7 @@ async def delete_old_messages(channel, bot_id):
         if msg.thread is not None:
             try:
                 await msg.thread.edit(locked=True, archived=False)
-                log.info(f"Thread '{msg.thread.name}' locked.")
+                log.debug(f"Thread '{msg.thread.name}' locked.")
             except Exception as e:
                 log.warning(f"Could not lock thread {msg.thread.id}: {e}")
         try:
@@ -187,6 +187,7 @@ class PollCog(commands.Cog):
         )
         await view.wait()
         if not view.confirmed:
+            log.debug(f"Poll action cancelled or timed out ({interaction.user}).")
             return
 
         await interaction.edit_original_response(content=f"⏳ {t(lang, 'poll_sending')}", view=None)
@@ -209,7 +210,7 @@ class PollCog(commands.Cog):
             color=discord.Color.blurple(),
         )
         embed_msg = await channel.send(embed=embed)
-        log.info(f"Embed sent (ID: {embed_msg.id})")
+        log.debug(f"Embed sent (ID: {embed_msg.id})")
 
         thread = await embed_msg.create_thread(
             name=f"💬 Chat - {title}",
@@ -223,7 +224,7 @@ class PollCog(commands.Cog):
                 noti_mention = noti_role.mention if noti_role else f"<@&{self.noti_role_id}>"
                 ping_msg = await thread.send(noti_mention)
             await ping_msg.delete()
-        log.info(f"Thread created: '{thread.name}' (ID: {thread.id})")
+        log.debug(f"Thread created: '{thread.name}' (ID: {thread.id})")
 
         polls = [
             {"question": "(1/2)",                    "answers": POLL_ANSWERS_1},
@@ -239,7 +240,7 @@ class PollCog(commands.Cog):
             for emoji, text in p["answers"]:
                 discord_poll.add_answer(text=text, emoji=emoji)
             msg = await channel.send(poll=discord_poll)
-            log.info(f"Poll sent: '{p['question']}' (ID: {msg.id})")
+            log.debug(f"Poll sent: '{p['question']}' (ID: {msg.id})")
 
         log.info(f"All polls sent. Running for {hours} hours.")
         await interaction.edit_original_response(content=f"✅ {t(lang, 'poll_sent')}")
@@ -263,6 +264,7 @@ class PollCog(commands.Cog):
         )
         await view.wait()
         if not view.confirmed:
+            log.debug(f"Poll action cancelled or timed out ({interaction.user}).")
             return
 
         await interaction.edit_original_response(content=f"⏳ {t(lang, 'poll_sending')}", view=None)
@@ -284,7 +286,7 @@ class PollCog(commands.Cog):
             color=discord.Color.blurple(),
         )
         embed_msg = await channel.send(embed=embed)
-        log.info(f"Embed sent (ID: {embed_msg.id})")
+        log.debug(f"Embed sent (ID: {embed_msg.id})")
 
         thread = await embed_msg.create_thread(
             name=f"💬 Chat - {title}",
@@ -298,7 +300,7 @@ class PollCog(commands.Cog):
                 noti_mention = noti_role.mention if noti_role else f"<@&{self.noti_role_id}>"
                 ping_msg = await thread.send(noti_mention)
             await ping_msg.delete()
-        log.info(f"Thread created: '{thread.name}' (ID: {thread.id})")
+        log.debug(f"Thread created: '{thread.name}' (ID: {thread.id})")
 
         polls = [
             {"question": "(1/2)", "answers": POLL_ANSWERS_1},
@@ -313,7 +315,7 @@ class PollCog(commands.Cog):
             for emoji, text in p["answers"]:
                 discord_poll.add_answer(text=text, emoji=emoji)
             msg = await channel.send(poll=discord_poll)
-            log.info(f"Poll sent: '{p['question']}' (ID: {msg.id})")
+            log.debug(f"Poll sent: '{p['question']}' (ID: {msg.id})")
 
         log.info(f"Day polls sent. Running for {hours} hours (until {title} 16:00).")
         await interaction.edit_original_response(content=f"✅ {t(lang, 'poll_sent')}")
@@ -333,6 +335,7 @@ class PollCog(commands.Cog):
         )
         await view.wait()
         if not view.confirmed:
+            log.debug(f"Poll action cancelled or timed out ({interaction.user}).")
             return
 
         await interaction.edit_original_response(content=f"⏳ {t(lang, 'poll_ending')}", view=None)
@@ -347,7 +350,7 @@ class PollCog(commands.Cog):
                 continue
             try:
                 await msg.end_poll()
-                log.info(f"Poll ended: '{msg.poll.question}' (ID: {msg.id})")
+                log.debug(f"Poll ended: '{msg.poll.question}' (ID: {msg.id})")
                 ended += 1
             except Exception as e:
                 log.error(f"Could not end poll '{msg.poll.question}': {e}")

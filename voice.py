@@ -268,6 +268,7 @@ class RenameModal(discord.ui.Modal):
         try:
             await asyncio.wait_for(interaction.channel.edit(name=name), timeout=5.0)
         except asyncio.TimeoutError:
+            log.info(f"Voice channel {channel_id} rename hit the rate limit ({interaction.user}).")
             await interaction.followup.send(f"❌ {t(lang, 'voice_err_rename_ratelimit')}", ephemeral=True)
             return
 
@@ -636,6 +637,7 @@ class ControlView(discord.ui.View):
         ch   = data.get(str(interaction.channel_id), {})
         if str(interaction.user.id) != ch.get("owner_id"):
             lang = detect_lang(interaction)
+            log.debug(f"Owner-only voice button denied for {interaction.user} (channel {interaction.channel_id}).")
             await interaction.response.send_message(f"❌ {t(lang, 'voice_err_owner_only')}", ephemeral=True)
             return False
         return True
@@ -820,6 +822,7 @@ class VoiceCog(commands.Cog):
             if str(member.id) not in order:
                 order.append(str(member.id))
                 save_voice_data(data)
+            log.debug(f"{member} joined voice room {after.channel.id}.")
 
         # ── Left auto-room: delete if empty, or auto-transfer ownership ──
         if before.channel and str(before.channel.id) in data and (
@@ -834,6 +837,7 @@ class VoiceCog(commands.Cog):
             order_changed = str(member.id) in order
             if order_changed:
                 order.remove(str(member.id))
+            log.debug(f"{member} left voice room {channel_id}.")
 
             if not humans:
                 del data[channel_id]

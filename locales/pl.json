@@ -220,6 +220,7 @@
   "rps_not_your_game": "To wyzwanie nie jest dla ciebie.",
   "rps_declined": "{opponent} odrzucił wyzwanie.",
   "rps_timeout": "Czas wyzwania minął.",
+  "rps_not_for_you": "To wyzwanie nie jest dla ciebie.",
   "rps_result_win": "{winner} wygrywa!",
   "rps_result_draw": "Remis!",
   "rps_err_bot": "Nie możesz wyzwać bota.",

@@ -179,8 +179,8 @@ async def _eph_edit(eph: dict | None, **kwargs) -> None:
         return
     try:
         await eph["wh"].edit_message(eph["id"], **kwargs)
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug(f"Ephemeral edit failed (msg {eph.get('id')}): {e}")
 
 
 # ─────────────────────────────────────────────
@@ -199,6 +199,7 @@ async def _pick_timeout(client: discord.Client, msg_id: int) -> None:
     game = _games.pop(msg_id, None)
     if not game:
         return
+    log.debug(f"RPS pick timeout (msg {msg_id}).")
     lang_c = game.get("lang_c", "en")
     lang_o = game.get("lang_o", lang_c)
     ch = client.get_channel(game["channel_id"])
@@ -342,7 +343,8 @@ async def _update_guess_eph(
             await eph["wh"].edit_message(eph["id"], embed=embed, view=view)
             await interaction.response.defer()
             return
-        except Exception:
+        except Exception as e:
+            log.debug(f"Guess panel edit failed for {uid}, sending a new one: {e}")
             _guess_ephs.pop(uid, None)
 
     await interaction.response.defer(ephemeral=True)
@@ -410,6 +412,8 @@ class GuessModal(discord.ui.Modal):
             status = t(lang, "guess_too_high", attempt=current)
             solved = False
 
+        if not solved:
+            log.debug(f"Guess attempt {current} by {interaction.user}: {guess}.")
         embed = _build_guess_embed(uid, state, lang, status=status)
         await _update_guess_eph(interaction, uid, embed, solved=solved)
 
@@ -466,7 +470,7 @@ class RpsEphemeralPickView(discord.ui.View):
     async def _pick(self, interaction: discord.Interaction, choice: str) -> None:
         lang = detect_lang(interaction)
         if interaction.user.id != self.player_id:
-            await interaction.response.defer()
+            await interaction.response.send_message(t(lang, "rps_not_for_you"), ephemeral=True)
             return
         game = _games.get(self.msg_id)
         if not game:
@@ -519,13 +523,15 @@ class RpsEphemeralRematchView(discord.ui.View):
                 child.label = t(lang_c, "rps_rematch_btn")
 
     async def on_timeout(self):
+        log.debug(f"RPS rematch offer timeout (msg {self.public_msg.id}).")
         await _eph_edit(self.ephemerals.get(self.clicker_id),
                         content=t(self.lang_c, "rps_timeout"), view=None)
 
     @discord.ui.button(style=discord.ButtonStyle.grey, emoji="🔄", custom_id="rps_rematch")
     async def rematch(self, interaction: discord.Interaction, _: discord.ui.Button):
         if interaction.user.id != self.clicker_id:
-            await interaction.response.defer()
+            await interaction.response.send_message(
+                t(detect_lang(interaction), "rps_not_for_you"), ephemeral=True)
             return
         if _games.get(self.public_msg.id):
             await interaction.response.send_message("❌", ephemeral=True)
@@ -598,7 +604,8 @@ class RpsEphemeralAcceptView(discord.ui.View):
     @discord.ui.button(style=discord.ButtonStyle.green, custom_id="eph_accept")
     async def accept(self, interaction: discord.Interaction, _: discord.ui.Button):
         if interaction.user.id != self.opponent_id:
-            await interaction.response.defer()
+            await interaction.response.send_message(
+                t(detect_lang(interaction), "rps_not_for_you"), ephemeral=True)
             return
         game = _games.get(self.public_msg.id)
         if not game:
@@ -627,7 +634,8 @@ class RpsEphemeralAcceptView(discord.ui.View):
     @discord.ui.button(style=discord.ButtonStyle.red, custom_id="eph_decline")
     async def decline(self, interaction: discord.Interaction, _: discord.ui.Button):
         if interaction.user.id != self.opponent_id:
-            await interaction.response.defer()
+            await interaction.response.send_message(
+                t(detect_lang(interaction), "rps_not_for_you"), ephemeral=True)
             return
         _games.pop(self.public_msg.id, None)
         self.stop()
@@ -636,9 +644,11 @@ class RpsEphemeralAcceptView(discord.ui.View):
             content=t(self.lang_o, "rps_declined", opponent=interaction.user.mention), view=None
         )
         await _eph_edit(self.ephemerals.get(self.challenger_id), content=declined_text, view=None)
+        log.info(f"RPS rematch declined by {interaction.user} (msg {self.public_msg.id}).")
 
     async def on_timeout(self):
         _games.pop(self.public_msg.id, None)
+        log.debug(f"RPS rematch accept timeout (msg {self.public_msg.id}).")
         await _eph_edit(self.ephemerals.get(self.opponent_id),   content=t(self.lang_o, "rps_timeout"), view=None)
         await _eph_edit(self.ephemerals.get(self.challenger_id), content=t(self.lang_c, "rps_timeout"), view=None)
 
@@ -665,7 +675,8 @@ class RpsAcceptView(discord.ui.View):
     @discord.ui.button(style=discord.ButtonStyle.green, custom_id="rps_accept")
     async def accept(self, interaction: discord.Interaction, _: discord.ui.Button):
         if interaction.user.id != self.opponent_id:
-            await interaction.response.defer()
+            await interaction.response.send_message(
+                t(detect_lang(interaction), "rps_not_for_you"), ephemeral=True)
             return
         game = _games.get(interaction.message.id)
         if not game:
@@ -700,7 +711,8 @@ class RpsAcceptView(discord.ui.View):
     @discord.ui.button(style=discord.ButtonStyle.red, custom_id="rps_decline")
     async def decline(self, interaction: discord.Interaction, _: discord.ui.Button):
         if interaction.user.id != self.opponent_id:
-            await interaction.response.defer()
+            await interaction.response.send_message(
+                t(detect_lang(interaction), "rps_not_for_you"), ephemeral=True)
             return
         game = _games.pop(self._msg.id, None) if self._msg else None
         self.stop()
@@ -709,11 +721,13 @@ class RpsAcceptView(discord.ui.View):
         if game:
             await _eph_edit(game.get("ephemerals", {}).get(self.challenger_id),
                             content=declined_text, view=None)
+        log.info(f"RPS declined by {interaction.user} (msg {interaction.message.id}).")
 
     async def on_timeout(self):
         if not self._msg:
             return
         game = _games.pop(self._msg.id, None)
+        log.debug(f"RPS challenge timeout (msg {self._msg.id}).")
         timeout_text = _bi(self.lang_c, self.lang_o, "rps_timeout")
         try:
             await self._msg.edit(content=timeout_text, embed=None, view=None)
@@ -759,7 +773,7 @@ class GamesCog(commands.Cog):
             await interaction.response.edit_message(content=t(lang, "rps_timeout"), embed=None, view=None)
         except discord.HTTPException:
             pass
-        log.info(f"Stale RPS component '{custom_id}' answered for {interaction.user}.")
+        log.debug(f"Stale RPS component '{custom_id}' answered for {interaction.user}.")
 
     # ── GUESS GAME TASK ───────────────────────
 
@@ -783,6 +797,8 @@ class GamesCog(commands.Cog):
         cfg   = _load_config()
         ch_id = cfg.get("game_channel_id")
         ch    = self.bot.get_channel(ch_id) if ch_id else None
+        if not ch:
+            log.debug("No game channel set — guess rollover runs without announcements.")
 
         embeds = []
         _guess_ephs.clear()
@@ -915,6 +931,7 @@ class GamesCog(commands.Cog):
             solvers.items(),
             key=lambda x: (x[1]["attempts"], x[1]["solved_at"])
         )
+        awarded = []
         async with _users_lock:
             users = _load_users()
             for i, (uid, _) in enumerate(ranked):
@@ -925,7 +942,10 @@ class GamesCog(commands.Cog):
                 guess["season_games"] = guess.get("season_games", 0) + 1
                 guess["total_pts"]    = guess.get("total_pts",    0) + pts
                 guess["total_games"]  = guess.get("total_games",  0) + 1
+                awarded.append(f"{uid}+{pts}")
             _save_users(users)
+        if awarded:
+            log.info(f"Guess points awarded: {', '.join(awarded)}")
 
     # ── SLASH COMMANDS ────────────────────────
 
@@ -1047,6 +1067,7 @@ class GamesCog(commands.Cog):
             color=discord.Color.gold(),
         )
         await interaction.response.send_message(embed=embed)
+        log.debug(f"/leaderboard viewed by {interaction.user}")
 
     @app_commands.command(
         name="game-set",
@@ -1103,11 +1124,13 @@ class GamesCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         msg = await interaction.followup.send(embed=embed, view=view, ephemeral=True, wait=True)
         _guess_ephs[uid] = {"wh": interaction.followup, "id": msg.id}
+        log.debug(f"/guess opened by {interaction.user}")
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         if isinstance(error, app_commands.CommandOnCooldown):
             lang  = detect_lang(interaction)
             retry = round(error.retry_after)
+            log.debug(f"Cooldown hit by {interaction.user} ({retry}s).")
             await interaction.response.send_message(t(lang, "rps_cooldown", seconds=retry), ephemeral=True)
 
 

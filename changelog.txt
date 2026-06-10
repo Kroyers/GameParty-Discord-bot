@@ -1,3 +1,10 @@
+[0.3.2] — 2026-06-10
+# Changed
+## Better logging
+
+# Fixed
+## RPS have more problems with Discord API
+
 [0.3.1] — 2026-06-10
 # Fixed
 ## RPS time out when choosing symbols

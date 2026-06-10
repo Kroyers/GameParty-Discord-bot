@@ -220,6 +220,7 @@
   "rps_not_your_game": "Tato výzva není pro tebe.",
   "rps_declined": "{opponent} odmítl výzvu.",
   "rps_timeout": "Výzva vypršela.",
+  "rps_not_for_you": "Tahle výzva není pro tebe.",
   "rps_result_win": "{winner} vyhrál!",
   "rps_result_draw": "Remíza!",
   "rps_err_bot": "Nemůžeš vyzvat bota.",

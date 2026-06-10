@@ -120,6 +120,14 @@ def save_bday(user_id: str, lang: str, day: int, month: int, year: int | None) -
     save_users(users)
 
 
+def get_bday(user_id: str) -> dict | None:
+    """Returns {"day", "month", "year"} of the stored birthday, or None."""
+    entry = load_users().get(user_id, {})
+    if "day" not in entry:
+        return None
+    return {"day": entry["day"], "month": entry["month"], "year": entry.get("year")}
+
+
 def has_bday(user_id: str) -> bool:
     """True when the user has a birthday stored (raw check, no decryption)."""
     if not os.path.exists(USERS_FILE):
@@ -216,6 +224,7 @@ class BdayCog(commands.Cog):
         if now.hour != 0:
             return
 
+        log.debug("Running daily birthday check.")
         channel = self.bot.get_channel(self.bday_channel_id)
         if channel is None:
             log.warning(f"Birthday channel (ID {self.bday_channel_id}) not found.")

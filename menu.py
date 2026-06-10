@@ -6,7 +6,7 @@ import os
 import re
 import logging
 from lang import detect_lang, t, LOCALES, _get_explicit_lang, _save_user_lang, clear_user_lang
-from bday import validate_bday, save_bday, remove_bday, format_bday, has_bday
+from bday import validate_bday, save_bday, remove_bday, format_bday, has_bday, get_bday
 from voice import _LangSelect, load_voice_data, update_control_panel
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -66,19 +66,23 @@ class _BackButton(discord.ui.Button):
 # ─────────────────────────────────────────────
 
 class BdayMenuModal(discord.ui.Modal):
-    def __init__(self, lang: str):
+    def __init__(self, lang: str, current: dict | None = None):
         super().__init__(title=t(lang, "menu_bday_modal_title"))
+        current = current or {}
         self.day = discord.ui.TextInput(
             label=t(lang, "menu_bday_day"), placeholder="1–31",
             min_length=1, max_length=2,
+            default=str(current["day"]) if current.get("day") else None,
         )
         self.month = discord.ui.TextInput(
             label=t(lang, "menu_bday_month"), placeholder="1–12",
             min_length=1, max_length=2,
+            default=str(current["month"]) if current.get("month") else None,
         )
         self.year = discord.ui.TextInput(
             label=t(lang, "menu_bday_year"), placeholder="1990",
             required=False, max_length=4,
+            default=str(current["year"]) if current.get("year") else None,
         )
         self.add_item(self.day)
         self.add_item(self.month)
@@ -207,7 +211,10 @@ class MenuView(discord.ui.View):
 
     @discord.ui.button(label="Birthday", style=discord.ButtonStyle.blurple, emoji="🎂", custom_id="menu_bday", row=0)
     async def bday_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(BdayMenuModal(detect_lang(interaction)))
+        lang = detect_lang(interaction)
+        await interaction.response.send_modal(
+            BdayMenuModal(lang, get_bday(str(interaction.user.id)))
+        )
 
     @discord.ui.button(label="Remove birthday", style=discord.ButtonStyle.grey, emoji="🗑️", custom_id="menu_bday_remove", row=0)
     async def bday_remove_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -264,7 +271,7 @@ class MenuCog(commands.Cog):
         lang = detect_lang(interaction)
         view = MenuView(lang, show_bday_remove=has_bday(str(interaction.user.id)))
         await interaction.response.send_message(embed=_menu_embed(lang), view=view, ephemeral=True)
-        log.info(f"/menu opened by {interaction.user}")
+        log.debug(f"/menu opened by {interaction.user}")
 
 
 async def setup(bot: commands.Bot):

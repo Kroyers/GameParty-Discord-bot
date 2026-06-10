@@ -118,8 +118,9 @@ if not _github_env:
 else:
     GITHUB_REPO = _github_env
 GIT_BRANCH  = "main"
-VERSION     = "0.3.1" #MAJOR . MINOR - new functions . PATCH - bugfix
+VERSION     = "0.3.2" #MAJOR . MINOR - new functions . PATCH - bugfix
 STATUS_TEXT = "👥 {count}"   # bot presence text, {count} = humans on the server
+LOG_LEVEL   = "INFO"         # DEBUG (everything incl. stale-button hits) | INFO (normal operation) | WARNING (problems only) | ERROR (failures only)
 
 EXTENSIONS = [
     "lang",
@@ -208,7 +209,9 @@ _console_handler.setFormatter(
     _ColorFormatter(datefmt="%Y-%m-%d %H:%M:%S") if _enable_color() else _file_fmt
 )
 
-logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _console_handler])
+logging.basicConfig(level=LOG_LEVEL, handlers=[_file_handler, _console_handler])
+# The discord library stays at INFO so LOG_LEVEL="DEBUG" only verboses bot code.
+logging.getLogger("discord").setLevel(logging.INFO)
 logging.getLogger("discord.http").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
@@ -298,6 +301,7 @@ async def _update_member_status():
         status=discord.Status.online,
         activity=discord.CustomActivity(name=STATUS_TEXT.format(count=count)),
     )
+    log.debug(f"Presence updated: {count} members.")
 
 
 @bot.event

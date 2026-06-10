@@ -360,6 +360,7 @@ class NotiCog(commands.Cog):
             return
         data         = load_noti()
         changed      = False
+        log.debug(f"YouTube check: {len(data['youtube'])} channel(s).")
 
         for ch_id, info in data["youtube"].items():
             recent = await yt_fetch_recent(self._session, self._yt_key, ch_id, max_results=1)
@@ -409,6 +410,7 @@ class NotiCog(commands.Cog):
 
         if not stream_ch_id:
             return
+        log.debug(f"Twitch check: {len(data['twitch'])} streamer(s).")
 
         for login, info in data["twitch"].items():
             stream    = await self._twitch.get_stream(self._session, login)
@@ -522,6 +524,7 @@ class NotiCog(commands.Cog):
         channel = self.bot.get_channel(ch_id)
         if not channel:
             return
+        log.debug(f"RSS check: {len(data['rss'])} feed(s).")
 
         for url, info in data["rss"].items():
             try:
