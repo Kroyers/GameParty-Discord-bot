@@ -1,3 +1,8 @@
+[0.3.4] — 2026-06-15
+# Changed
+## Blance changes of Guess
+## Guess results now show monificator
+
 [0.3.3] — 2026-06-12
 # Changed
 ## Guess have now more hints and daily hint is same for everyone

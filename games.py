@@ -26,9 +26,9 @@ _GUESS_HINT_TYPES = ("parity", "digits", "digitsum", "first_digit",
                      "last_digit", "half", "div3")     # one is drawn per day
 _GUESS_NORMAL_CHANCE = 0.60      # chance of a plain day without a modifier
 _GUESS_MODIFIERS = (             # relative weights among modifiers on modifier days
-    ("wordle",  40),             # digits marked like Wordle instead of high/low
-    ("hotcold", 30),             # distance only (hot/cold), no direction
-    ("reverse", 10),             # high/low hints are swapped
+    ("wordle",  30),             # digits marked like Wordle instead of high/low
+    ("hotcold", 15),             # distance only (hot/cold), no direction
+    ("reverse", 5),             # high/low hints are swapped
 )                                # April 1st is always "pokerface" — no hints at all
 _RPS_DAILY_CAP = 10
 
@@ -93,30 +93,22 @@ def _draw_modifier(today: str) -> str | None:
 
 
 def _wordle_feedback(guess: int, number: int) -> str:
-    """Wordle-style riddle over 4 left-zero-padded digits: **bold** right
-    place, __underlined__ right digit elsewhere, plain not in the number
-    (duplicates handled)."""
+    """Wordle-style feedback over 4 left-zero-padded digits: 🟩 right place,
+    🟨 right digit elsewhere, ⬛ not in the number (duplicates handled).
+    Returns two lines — the marks above, the digits below."""
     g, n = f"{guess:04d}", f"{number:04d}"
-    marks     = [None] * 4   # None = plain, True = bold, False = underline
+    marks     = ["⬛"] * 4
     remaining = []
     for i in range(4):
         if g[i] == n[i]:
-            marks[i] = True
+            marks[i] = "🟩"
         else:
             remaining.append(n[i])
     for i in range(4):
-        if marks[i] is None and g[i] in remaining:
-            marks[i] = False
+        if marks[i] == "⬛" and g[i] in remaining:
+            marks[i] = "🟨"
             remaining.remove(g[i])
-    out = []
-    for mark, digit in zip(marks, g):
-        if mark is True:
-            out.append(f"**{digit}**")
-        elif mark is False:
-            out.append(f"__{digit}__")
-        else:
-            out.append(digit)
-    return " ".join(out)
+    return "".join(marks) + "\n" + " ".join(g)
 
 
 def _wrong_status(state: dict, guess: int, number: int, attempt: int, lang: str) -> str:
@@ -126,7 +118,7 @@ def _wrong_status(state: dict, guess: int, number: int, attempt: int, lang: str)
     if mod == "wordle":
         return t(lang, "guess_wordle_result", result=_wordle_feedback(guess, number), attempt=attempt)
     if mod == "hotcold":
-        key = "guess_hot_burn" if diff <= 100 else ("guess_hot_warm" if diff <= 1000 else "guess_hot_cold")
+        key = "guess_hot_burn" if diff <= 50 else ("guess_hot_warm" if diff <= 500 else "guess_hot_cold")
         return t(lang, key, attempt=attempt)
     if mod == "pokerface":
         return t(lang, "guess_pokerface", attempt=attempt)
@@ -447,15 +439,23 @@ def _build_guess_embed(uid: str, state: dict, lang: str, status: str | None = No
             parts.append("")
             parts.append(f"💡 {hint}")
 
-    if ranked:
+    # Players still guessing (have attempts, not solved yet), most active first.
+    in_progress = sorted(
+        ((u, n) for u, n in state.get("attempts", {}).items() if u not in solvers and n > 0),
+        key=lambda x: x[1], reverse=True,
+    )
+
+    if ranked or in_progress:
         parts.append("")
         parts.append(t(lang, "guess_standings"))
         for i, (s_uid, data) in enumerate(ranked[:5]):
-            medal = medals[i] if i < 3 else f"{i + 1}."
+            medal = medals[i] if i < 3 else f" {i + 1}."
             parts.append(
                 f"{medal} <@{s_uid}> — {data['attempts']} {t(lang, 'guess_attempts')}"
                 f" · {_fmt_duration(data.get('duration', 0.0))}"
             )
+        for p_uid, n in in_progress[:5]:
+            parts.append(f"⏳ <@{p_uid}> — {n} {t(lang, 'guess_attempts')}")
 
     return discord.Embed(
         title=t(lang, "guess_title"),
@@ -1024,7 +1024,7 @@ class GamesCog(commands.Cog):
             for i, (uid, total, gpts, gg, rpts, rg) in enumerate(rows[:10]):
                 member = guild.get_member(int(uid)) if guild else None
                 name   = member.display_name if member else f"<@{uid}>"
-                medal  = medals[i] if i < 3 else f"{i + 1}."
+                medal  = medals[i] if i < 3 else f" {i + 1}."
                 lines.append(f"{medal} **{name}** — **{total}** b · 🔢 {gpts}/{gg} · ✊ {rpts}/{rg}")
             desc = "\n".join(lines)
         else:
@@ -1058,11 +1058,16 @@ class GamesCog(commands.Cog):
                 pts    = _pts_for_rank(i) * mult
                 lines.append(
                     f"{medal} **{name}** — {data['attempts']} {t('en', 'guess_attempts')}"
-                    f" · {_fmt_duration(data.get('duration', 0.0))} +{pts} {t('en', 'guess_pts_label')}"
+                    f" · {_fmt_duration(data.get('duration', 0.0))} · +{pts} {t('en', 'guess_pts_label')}"
                 )
             desc = "\n".join(lines)
         else:
             desc = t("en", "guess_no_solvers")
+
+        # Reveal the day's hidden twist now that the round is over (under the title).
+        mod = state.get("modifier")
+        if mod:
+            desc = t("en", "guess_results_mod", name=t("en", f"guess_modname_{mod}")) + "\n\n" + desc
 
         return discord.Embed(
             title=t("en", "guess_results_title", number=number),
@@ -1195,7 +1200,7 @@ class GamesCog(commands.Cog):
         for i, (uid, entry, total, rps_pts, guess_pts, rps, guess) in enumerate(rows[:10]):
             member = interaction.guild.get_member(int(uid)) if interaction.guild else None
             name   = member.display_name if member else f"<@{uid}>"
-            medal  = medals[i] if i < 3 else f"{i + 1}."
+            medal  = medals[i] if i < 3 else f" {i + 1}."
             sw = entry.get("seasons_won", 0)
             rg = rps.get("season_games",   0)
             gg = guess.get("season_games", 0)
