@@ -21,9 +21,10 @@ log = logging.getLogger(__name__)
 
 _GUESS_POINTS  = [10, 7, 5, 3]   # rank 0=1st, 1=2nd, 2=3rd, 3=4th
 _GUESS_BANNED: set[int] = {6767, 67, 666, 616, 13, 1313, 1488, 8814, 88, 18, 1933, 1939, 4200, 1312, 911}  # numbers the daily draw will never pick, e.g. {1111, 1234}
-_GUESS_HINT_AFTER = 15           # attempts to unlock the daily hint (0 = disabled)
+_GUESS_HINT_AFTER = 15           # attempts to unlock the first daily hint (0 = disabled)
+_GUESS_HINT_EVERY = 10           # further hints unlock every this many attempts
 _GUESS_HINT_TYPES = ("parity", "digits", "digitsum", "first_digit",
-                     "last_digit", "half", "div3")     # one is drawn per day
+                     "last_digit", "half", "div3")     # shuffled order drawn per day
 _GUESS_NORMAL_CHANCE = 0.60      # chance of a plain day without a modifier
 _GUESS_MODIFIERS = (             # relative weights among modifiers on modifier days
     ("wordle",  30),             # digits marked like Wordle instead of high/low
@@ -46,18 +47,7 @@ def _solver_key(item: tuple) -> tuple:
     return (data["attempts"], data.get("duration", 0.0), data["solved_at"])
 
 
-def _daily_hint(state: dict, attempts_made: int, lang: str) -> str | None:
-    """One hint of the day — drawn randomly at rollover (same for everyone),
-    unlocked once a player reaches _GUESS_HINT_AFTER attempts. Stays visible
-    until the player solves the number."""
-    number = state.get("number")
-    if not _GUESS_HINT_AFTER or not number or attempts_made < _GUESS_HINT_AFTER:
-        return None
-    if state.get("modifier") == "wordle":
-        return None   # Wordle feedback is hint enough
-    # Older state without a stored hint falls back to a number-derived choice,
-    # so everyone still sees the same hint.
-    hint_type = state.get("hint") or _GUESS_HINT_TYPES[number % len(_GUESS_HINT_TYPES)]
+def _hint_text(hint_type: str, number: int, lang: str) -> str:
     if hint_type == "parity":
         return t(lang, "guess_hint_even" if number % 2 == 0 else "guess_hint_odd")
     if hint_type == "digits":
@@ -71,6 +61,21 @@ def _daily_hint(state: dict, attempts_made: int, lang: str) -> str | None:
     if hint_type == "div3":
         return t(lang, "guess_hint_div3_yes" if number % 3 == 0 else "guess_hint_div3_no")
     return t(lang, "guess_hint_digitsum", sum=sum(int(d) for d in str(number)))
+
+
+def _daily_hints(state: dict, attempts_made: int, lang: str) -> list[str]:
+    """Hints of the day in a fixed random order (same for everyone). The first
+    unlocks at _GUESS_HINT_AFTER attempts, each further one every
+    _GUESS_HINT_EVERY. They stay visible until the player solves the number."""
+    number = state.get("number")
+    if not _GUESS_HINT_AFTER or not number or attempts_made < _GUESS_HINT_AFTER:
+        return []
+    if state.get("modifier") == "wordle":
+        return []   # Wordle feedback is hint enough
+    # Legacy state stored a single "hint"; fall back to it (or a stable order).
+    order = state.get("hints") or ([state["hint"]] if state.get("hint") else list(_GUESS_HINT_TYPES))
+    count = 1 + (attempts_made - _GUESS_HINT_AFTER) // _GUESS_HINT_EVERY
+    return [_hint_text(h, number, lang) for h in order[:count]]
 
 
 def _hint_key(diff: int, low: bool) -> str:
@@ -118,7 +123,14 @@ def _wrong_status(state: dict, guess: int, number: int, attempt: int, lang: str)
     if mod == "wordle":
         return t(lang, "guess_wordle_result", result=_wordle_feedback(guess, number), attempt=attempt)
     if mod == "hotcold":
-        key = "guess_hot_burn" if diff <= 50 else ("guess_hot_warm" if diff <= 500 else "guess_hot_cold")
+        if diff < 10:
+            key = "guess_hot_scorch"
+        elif diff <= 50:
+            key = "guess_hot_burn"
+        elif diff <= 500:
+            key = "guess_hot_warm"
+        else:
+            key = "guess_hot_cold"
         return t(lang, key, attempt=attempt)
     if mod == "pokerface":
         return t(lang, "guess_pokerface", attempt=attempt)
@@ -434,10 +446,10 @@ def _build_guess_embed(uid: str, state: dict, lang: str, status: str | None = No
         if state.get("modifier") == "pokerface":
             parts.append("")
             parts.append(t(lang, "guess_mod_pokerface"))
-        hint = _daily_hint(state, attempts_made, lang)
-        if hint:
+        hints = _daily_hints(state, attempts_made, lang)
+        if hints:
             parts.append("")
-            parts.append(f"💡 {hint}")
+            parts.extend(f"💡 {h}" for h in hints)
 
     # Players still guessing (have attempts, not solved yet), most active first.
     in_progress = sorted(
@@ -956,7 +968,8 @@ class GamesCog(commands.Cog):
         while number in _GUESS_BANNED:
             number = random.randint(lo, hi)
         new_state = {"date": today, "number": number, "attempts": {}, "started": {}, "solvers": {},
-                     "hint": random.choice(_GUESS_HINT_TYPES), "modifier": modifier}
+                     "hints": random.sample(_GUESS_HINT_TYPES, len(_GUESS_HINT_TYPES)),
+                     "modifier": modifier}
         _save_guess_state(new_state)
 
         start_line = t("en", "guess_start")

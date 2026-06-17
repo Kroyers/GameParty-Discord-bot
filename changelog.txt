@@ -1,6 +1,10 @@
+[0.3.5] — 2026-06-17
+# Changed
+## More balance of Guess
+
 [0.3.4] — 2026-06-15
 # Changed
-## Blance changes of Guess
+## Balance changes of Guess
 ## Guess results now show monificator
 
 [0.3.3] — 2026-06-12

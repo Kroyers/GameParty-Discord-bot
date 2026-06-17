@@ -289,6 +289,7 @@
   "guess_mod_hotcold": "🌀 **Modyfikator dnia: Ciepło–zimno** — bot zdradza tylko odległość, nie kierunek!",
   "guess_mod_reverse": "🌀 **Modyfikator dnia: Dzień na odwrót** — za dużo i za mało są zamienione!",
   "guess_wordle_result": "{result} (próba {attempt})",
+  "guess_hot_scorch": "🌋 Aż parzy! (próba {attempt})",
   "guess_hot_burn": "🔥 Gorąco! (próba {attempt})",
   "guess_hot_warm": "♨️ Ciepło! (próba {attempt})",
   "guess_hot_cold": "🌊 Zimno! (próba {attempt})",

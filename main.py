@@ -118,7 +118,7 @@ if not _github_env:
 else:
     GITHUB_REPO = _github_env
 GIT_BRANCH  = "main"
-VERSION     = "0.3.4" #MAJOR . MINOR - new functions . PATCH - bugfix
+VERSION     = "0.3.5" #MAJOR . MINOR - new functions . PATCH - bugfix
 STATUS_TEXT = "👥 {count}"   # bot presence text, {count} = humans on the server
 LOG_LEVEL   = "INFO"         # DEBUG (everything incl. stale-button hits) | INFO (normal operation) | WARNING (problems only) | ERROR (failures only)
 

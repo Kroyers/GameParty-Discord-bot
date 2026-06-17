@@ -289,6 +289,7 @@
   "guess_mod_hotcold": "🌀 **Today's modifier: Hot & Cold** — the bot only tells you the distance, not the direction!",
   "guess_mod_reverse": "🌀 **Today's modifier: Opposite day** — high and low are swapped!",
   "guess_wordle_result": "{result} (attempt {attempt})",
+  "guess_hot_scorch": "🌋 Scorching hot! (attempt {attempt})",
   "guess_hot_burn": "🔥 Burning hot! (attempt {attempt})",
   "guess_hot_warm": "♨️ Getting warmer! (attempt {attempt})",
   "guess_hot_cold": "🌊 Ice cold! (attempt {attempt})",
