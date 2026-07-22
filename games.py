@@ -457,13 +457,13 @@ def _build_guess_embed(uid: str, state: dict, lang: str, status: str | None = No
         key=lambda x: x[1], reverse=True,
     )
 
-    if ranked or in_progress:
+  if ranked or in_progress:
         parts.append("")
         parts.append(t(lang, "guess_standings"))
         for i, (s_uid, data) in enumerate(ranked[:5]):
             medal = medals[i] if i < 3 else f" {i + 1}."
-            # Convert timestamp to a 24-hour string (e.g., 14:30 UTC)
-            solved_time = datetime.datetime.fromtimestamp(data['solved_at'], datetime.timezone.utc).strftime('%H:%M UTC')
+            # Discord markdown dynamically converts the UNIX timestamp to the viewer's local time
+            solved_time = f"<t:{int(data['solved_at'])}:t>"
             
             parts.append(
                 f"{medal} <@{s_uid}> — {data['attempts']} {t(lang, 'guess_attempts')}"
@@ -1065,15 +1065,15 @@ class GamesCog(commands.Cog):
         ranked = sorted(solvers.items(), key=_solver_key)
         mult   = 2 if state.get("modifier") == "pokerface" else 1
 
-        if ranked:
+    if ranked:
             lines = []
             for i, (uid, data) in enumerate(ranked):
                 member = guild.get_member(int(uid)) if guild else None
                 name   = member.display_name if member else f"<@{uid}>"
                 medal  = medals[i] if i < 3 else f"{i + 1}."
                 pts    = _pts_for_rank(i) * mult
-                # Convert timestamp to a 24-hour string
-                solved_time = datetime.datetime.fromtimestamp(data['solved_at'], datetime.timezone.utc).strftime('%H:%M UTC')
+                # Discord markdown dynamically converts the UNIX timestamp to the viewer's local time
+                solved_time = f"<t:{int(data['solved_at'])}:t>"
                 
                 lines.append(
                     f"{medal} **{name}** — {data['attempts']} {t('en', 'guess_attempts')}"
