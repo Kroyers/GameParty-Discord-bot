@@ -10,6 +10,8 @@
   "saved": "Tvoje datum narození bylo uloženo: **{date}**",
   "bday_wish": "Všechno nejlepší k tvým narozeninám, {mention}!",
   "bday_wish_age": "Všechno nejlepší k tvým {age}. narozeninám, {mention}!",
+  "bday_wishnow_result": "Odesláno: {sent}, selhalo: {failed}.",
+  "bday_wishnow_no_channel": "Narozeninový kanál není nastaven nebo nebyl nalezen.",
   "channel_set": "Narozeninový kanál nastaven na {channel}.",
 
   "cmd_bday": "Zaregistruj své datum narození",
@@ -21,6 +23,7 @@
   "cmd_bday_year": "Rok narození (volitelné)",
   "cmd_bday_set": "Nastav kanál pro narozeninová přání",
   "cmd_bday_set_channel": "Kanál (prázdné = aktuální kanál)",
+  "cmd_bday_wish_now": "Okamžitě odešle dnešní narozeninová přání (např. po chybě doručení)",
   "param_day": "den",
   "param_month": "mesic",
   "param_year": "rok",

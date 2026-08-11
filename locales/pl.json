@@ -10,6 +10,8 @@
   "saved": "Twoja data urodzin została zapisana: **{date}**",
   "bday_wish": "Wszystkiego najlepszego z okazji urodzin, {mention}!",
   "bday_wish_age": "Wszystkiego najlepszego z okazji {age}. urodzin, {mention}!",
+  "bday_wishnow_result": "Wysłano: {sent}, nieudane: {failed}.",
+  "bday_wishnow_no_channel": "Kanał urodzinowy nie jest ustawiony lub nie został znaleziony.",
   "channel_set": "Kanał urodzinowy ustawiony na {channel}.",
 
   "cmd_bday": "Zarejestruj swoje urodziny",
@@ -21,6 +23,7 @@
   "cmd_bday_year": "Rok urodzin (opcjonalne)",
   "cmd_bday_set": "Ustaw kanał ogłoszeń urodzinowych",
   "cmd_bday_set_channel": "Kanał (puste = bieżący kanał)",
+  "cmd_bday_wish_now": "Natychmiast wysyła dzisiejsze życzenia urodzinowe (np. po błędzie dostarczenia)",
   "param_day": "dzien",
   "param_month": "miesiac",
   "param_year": "rok",

@@ -10,6 +10,8 @@
   "saved": "Your birthday has been saved: **{date}**",
   "bday_wish": "Happy Birthday, {mention}!",
   "bday_wish_age": "Happy {age}th Birthday, {mention}!",
+  "bday_wishnow_result": "Sent: {sent}, failed: {failed}.",
+  "bday_wishnow_no_channel": "The birthday channel isn't set or wasn't found.",
   "channel_set": "Birthday channel set to {channel}.",
 
   "cmd_bday": "Register your birthday",
@@ -21,6 +23,7 @@
   "cmd_bday_year": "Year of birth (optional)",
   "cmd_bday_set": "Set the birthday announcement channel",
   "cmd_bday_set_channel": "Channel to use (leave empty for current channel)",
+  "cmd_bday_wish_now": "Send today's birthday wishes right now (e.g. after a delivery failure)",
   "param_day": "day",
   "param_month": "month",
   "param_year": "year",
