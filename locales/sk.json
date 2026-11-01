@@ -245,7 +245,9 @@
   "cmd_leaderboard": "Zobraz kombinovaný rebríček sezóny",
   "leaderboard_title": "Rebríček – {season}",
   "leaderboard_empty": "V tejto sezóne zatiaľ nikto neskóroval.",
-  "leaderboard_pts": "b",
+  "leaderboard_col_player": "Hráč",
+  "leaderboard_col_pts": "Body",
+  "leaderboard_legend": "🔢 & ✊ = body/odohrané hry · 🏆 = vyhrané sezóny",
 
   "cmd_game_set": "Nastav herný kanál",
   "cmd_game_set_channel": "Kanál (prázdne = aktuálny kanál)",

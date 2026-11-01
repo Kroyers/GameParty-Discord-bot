@@ -245,7 +245,9 @@
   "cmd_leaderboard": "Wyświetl łączny ranking sezonu",
   "leaderboard_title": "Ranking – {season}",
   "leaderboard_empty": "Nikt jeszcze nie zdobył punktów w tym sezonie.",
-  "leaderboard_pts": "pkt",
+  "leaderboard_col_player": "Gracz",
+  "leaderboard_col_pts": "Pkt",
+  "leaderboard_legend": "🔢 & ✊ = punkty/rozegrane gry · 🏆 = wygrane sezony",
 
   "cmd_game_set": "Ustaw kanał gry",
   "cmd_game_set_channel": "Kanał (puste = bieżący kanał)",

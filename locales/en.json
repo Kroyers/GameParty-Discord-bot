@@ -245,7 +245,9 @@
   "cmd_leaderboard": "Show the combined season leaderboard",
   "leaderboard_title": "Leaderboard – {season}",
   "leaderboard_empty": "No points scored this season yet.",
-  "leaderboard_pts": "pts",
+  "leaderboard_col_player": "Player",
+  "leaderboard_col_pts": "Pts",
+  "leaderboard_legend": "🔢 & ✊ = points/games played · 🏆 = seasons won",
 
   "cmd_game_set": "Set the channel for the daily number guessing game",
   "cmd_game_set_channel": "Channel to use (leave empty for current channel)",

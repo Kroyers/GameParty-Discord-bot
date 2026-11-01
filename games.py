@@ -255,6 +255,22 @@ def _season_name(offset_months: int = 0) -> str:
     return f"{month:02d}-{str(year)[2:]}"
 
 
+def _leaderboard_table(rows: list[tuple], lang: str) -> str:
+    """rows: (name, total, guess_pts, guess_games, rps_pts, rps_games, seasons_won).
+    Monospace table in a code block + legend. Emoji are 2 cells wide, hence the narrower header fields."""
+    lines = [
+        f"{'#':>2}  {t(lang, 'leaderboard_col_player'):<12}  {t(lang, 'leaderboard_col_pts'):>4}"
+        f"  {'🔢':>5}  {'✊':>4}  {'🏆':>3}",
+        "─" * 43,
+    ]
+    for i, (name, total, gpts, gg, rpts, rg, sw) in enumerate(rows, 1):
+        if len(name) > 12:
+            name = name[:11] + "…"
+        lines.append(f"{i:>2}  {name:<12}  {total:>4}  {f'{gpts}/{gg}':>6}  {f'{rpts}/{rg}':>5}  {sw:>4}")
+    body = "\n".join(lines).replace("`", "'")
+    return f"```\n{body}\n```\n-# {t(lang, 'leaderboard_legend')}"
+
+
 # ─────────────────────────────────────────────
 #  RPS STATS
 # ─────────────────────────────────────────────
@@ -1000,6 +1016,14 @@ class GamesCog(commands.Cog):
             await ch.send(embeds=embeds)
         log.info(f"Guess game started: number={number}, date={today}, modifier={modifier}")
 
+    def _display_name(self, guild: discord.Guild | None, uid: str) -> str:
+        # Plain text — mentions don't render inside the leaderboard code block.
+        member = guild.get_member(int(uid)) if guild else None
+        if member:
+            return member.display_name
+        user = self.bot.get_user(int(uid))
+        return user.display_name if user else "?"
+
     async def _auto_season_reset(self, ch: discord.TextChannel | None) -> discord.Embed:
         guild = getattr(ch, "guild", None)
         async with _users_lock:
@@ -1034,15 +1058,12 @@ class GamesCog(commands.Cog):
                         s["season_wins"] = 0
             _save_users(users)
 
-        medals = ["🥇", "🥈", "🥉"]
         if rows:
-            lines = []
-            for i, (uid, total, gpts, gg, rpts, rg) in enumerate(rows[:10]):
-                member = guild.get_member(int(uid)) if guild else None
-                name   = member.display_name if member else f"<@{uid}>"
-                medal  = medals[i] if i < 3 else f" {i + 1}."
-                lines.append(f"{medal} **{name}** — **{total}** b · 🔢 {gpts}/{gg} · ✊ {rpts}/{rg}")
-            desc = "\n".join(lines)
+            table = [
+                (self._display_name(guild, uid), total, gpts, gg, rpts, rg, users[uid].get("seasons_won", 0))
+                for uid, total, gpts, gg, rpts, rg in rows[:10]
+            ]
+            desc = _leaderboard_table(table, "en")
         else:
             desc = t("en", "season_auto_reset_empty")
 
@@ -1214,26 +1235,19 @@ class GamesCog(commands.Cog):
 
         rows.sort(key=lambda x: x[2], reverse=True)
 
-        medals = ["🥇", "🥈", "🥉"]
-        lines  = []
-        for i, (uid, entry, total, rps_pts, guess_pts, rps, guess) in enumerate(rows[:10]):
-            member = interaction.guild.get_member(int(uid)) if interaction.guild else None
-            name   = member.display_name if member else f"<@{uid}>"
-            medal  = medals[i] if i < 3 else f" {i + 1}."
-            sw = entry.get("seasons_won", 0)
-            rg = rps.get("season_games",   0)
-            gg = guess.get("season_games", 0)
-            lines.append(
-                f"{medal} **{name}** [{sw}] — **{total}** {t(lang, 'leaderboard_pts')}"
-                f" · 🔢 {guess_pts}/{gg} · ✊ {rps_pts}/{rg}"
-            )
+        table = [
+            (self._display_name(interaction.guild, uid), total,
+             guess_pts, guess.get("season_games", 0), rps_pts, rps.get("season_games", 0),
+             entry.get("seasons_won", 0))
+            for uid, entry, total, rps_pts, guess_pts, rps, guess in rows[:10]
+        ]
 
         embed = discord.Embed(
             title=t(lang, "leaderboard_title", season=_season_name()),
-            description="\n".join(lines),
+            description=_leaderboard_table(table, lang),
             color=discord.Color.gold(),
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         log.debug(f"/leaderboard viewed by {interaction.user}")
 
     @app_commands.command(

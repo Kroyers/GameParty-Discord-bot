@@ -8,6 +8,7 @@ voice_data.json
 noti.json
 config.json
 guess_state.json
+watch_state.json
 
 # Logs
 logs/
