@@ -26,6 +26,7 @@ _GUESS_HINT_EVERY = 10           # further hints unlock every this many attempts
 _GUESS_HINT_TYPES = ("parity", "digits", "digitsum", "first_digit",
                      "last_digit", "half", "div3")     # shuffled order drawn per day
 _GUESS_NORMAL_CHANCE = 0.60      # chance of a plain day without a modifier
+_GUESS_STREAK_DECAY = 0.5        # modifier chance is multiplied by this for each modifier day in a row
 _GUESS_MODIFIERS = (             # relative weights among modifiers on modifier days
     ("wordle",  30),             # digits marked like Wordle instead of high/low
     ("hotcold", 15),             # distance only (hot/cold), no direction
@@ -87,10 +88,11 @@ def _hint_key(diff: int, low: bool) -> str:
     return "guess_close_low" if low else "guess_close_high"
 
 
-def _draw_modifier(today: str) -> str | None:
+def _draw_modifier(today: str, streak: int = 0) -> str | None:
+    """streak = how many modifier days directly precede today."""
     if today.endswith("-04-01"):
         return "pokerface"   # April Fools — the whole day, no draw
-    if random.random() < _GUESS_NORMAL_CHANCE:
+    if random.random() >= (1 - _GUESS_NORMAL_CHANCE) * _GUESS_STREAK_DECAY ** streak:
         return None
     names   = [name for name, _ in _GUESS_MODIFIERS]
     weights = [weight for _, weight in _GUESS_MODIFIERS]
@@ -977,7 +979,9 @@ class GamesCog(commands.Cog):
             if state.get("solvers"):
                 await self._award_guess_points(state)
 
-        modifier = _draw_modifier(today)
+        # States saved before streaks existed have no counter — fall back to yesterday's modifier.
+        streak   = state.get("modifier_streak", 1 if state.get("modifier") else 0)
+        modifier = _draw_modifier(today, streak)
         lo, hi = 1, 9999
         if modifier == "wordle":
             lo = 1000          # always 4 digits
@@ -988,7 +992,7 @@ class GamesCog(commands.Cog):
             number = random.randint(lo, hi)
         new_state = {"date": today, "number": number, "attempts": {}, "started": {}, "solvers": {},
                      "hints": random.sample(_GUESS_HINT_TYPES, len(_GUESS_HINT_TYPES)),
-                     "modifier": modifier}
+                     "modifier": modifier, "modifier_streak": streak + 1 if modifier else 0}
         _save_guess_state(new_state)
 
         start_line = t("en", "guess_start")

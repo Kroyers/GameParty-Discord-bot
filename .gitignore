@@ -9,6 +9,8 @@ noti.json
 config.json
 guess_state.json
 watch_state.json
+poll_games.json
+poll_run.json
 
 # Logs
 logs/
