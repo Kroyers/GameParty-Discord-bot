@@ -6,6 +6,7 @@ from lang import detect_lang, _save_user_lang, clear_user_lang, _get_user_lang, 
 import json
 import datetime
 import os
+from paths import data_path
 import logging
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -14,9 +15,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 #  SETTINGS
 # ─────────────────────────────────────────────
 
-USERS_FILE   = os.path.join(SCRIPT_DIR, "users.json")
-KEY_FILE     = os.path.join(SCRIPT_DIR, "bday.key")
-CONFIG_FILE  = os.path.join(SCRIPT_DIR, "config.json")
+USERS_FILE   = data_path("users.json")
+KEY_FILE     = data_path("bday.key")
+CONFIG_FILE  = data_path("config.json")
 
 log = logging.getLogger(__name__)
 

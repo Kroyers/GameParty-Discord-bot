@@ -1,8 +1,10 @@
-# Secrets
+# Secrets and runtime data (.env, bday.key, *.json state, update backups)
+data/
+
+# The same files from before they moved into data/ — they stay next to the code
+# until the bot's first start with paths.py, and must never be committed.
 .env
 bday.key
-
-# Runtime data
 users.json
 voice_data.json
 noti.json
@@ -11,6 +13,7 @@ guess_state.json
 watch_state.json
 poll_games.json
 poll_run.json
+rps_stats.json
 
 # Logs
 logs/

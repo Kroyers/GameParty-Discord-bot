@@ -4,14 +4,15 @@ from discord import app_commands
 from discord.ext import commands
 import json
 import os
+from paths import data_path
 import logging
 from lang import (_get_user_lang, _get_explicit_lang, _save_user_lang, clear_user_lang,
                   detect_lang, atomic_write_json, t, LOCALES, DEFAULT_LANG)
 
 SCRIPT_DIR       = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE      = os.path.join(SCRIPT_DIR, "config.json")
-VOICE_DATA_FILE  = os.path.join(SCRIPT_DIR, "voice_data.json")
-USERS_FILE       = os.path.join(SCRIPT_DIR, "users.json")
+CONFIG_FILE      = data_path("config.json")
+VOICE_DATA_FILE  = data_path("voice_data.json")
+USERS_FILE       = data_path("users.json")
 
 log = logging.getLogger(__name__)
 

@@ -1,3 +1,13 @@
+[0.3.11] — 2026-11-07
+# Changed
+## Poll menu now shows times that are still possible for voting.
+## Automatic bot update
+## Fail update or crash bot will fallback
+
+# Fixed
+## Poll for one day ends afer selected 15:00
+## Update delete files what should delete
+
 [0.3.10] — 2026-11-05
 # Changed
 ## Guess modifiers are less likely in a row

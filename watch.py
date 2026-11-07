@@ -4,12 +4,13 @@ from lang import atomic_write_json
 import html
 import json
 import os
+from paths import data_path
 import logging
 import re
 import aiohttp
 
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE  = os.path.join(SCRIPT_DIR, "watch_state.json")
+STATE_FILE  = data_path("watch_state.json")
 
 log = logging.getLogger(__name__)
 

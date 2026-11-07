@@ -5,15 +5,17 @@ from discord import app_commands
 from discord.ext import commands, tasks
 import json
 import os
+from paths import data_path
 import random
 import logging
 from lang import detect_lang, _get_user_lang, atomic_write_json, t
+from stats import track
 
 SCRIPT_DIR       = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE      = os.path.join(SCRIPT_DIR, "config.json")
-USERS_FILE       = os.path.join(SCRIPT_DIR, "users.json")
-GUESS_STATE_FILE = os.path.join(SCRIPT_DIR, "guess_state.json")
-RPS_STATS_FILE   = os.path.join(SCRIPT_DIR, "rps_stats.json")
+CONFIG_FILE      = data_path("config.json")
+USERS_FILE       = data_path("users.json")
+GUESS_STATE_FILE = data_path("guess_state.json")
+RPS_STATS_FILE   = data_path("rps_stats.json")
 
 _users_lock  = asyncio.Lock()
 _guess_ephs: dict[str, dict] = {}   # uid -> {"wh": Webhook, "id": int}
@@ -576,6 +578,7 @@ class GuessModal(discord.ui.Modal):
             status = t(lang, "guess_correct", attempts=current)
             solved = True
             log.info(f"Guess solved by {interaction.user} in {current} attempts")
+            track("Guess Solved", interaction, attempts=current, modifier=state.get("modifier") or "none")
         else:
             _save_guess_state(state)
             status = _wrong_status(state, guess, number, current, lang)

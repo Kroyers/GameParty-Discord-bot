@@ -2,11 +2,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from lang import detect_lang, atomic_write_json, t
+from stats import track
 import asyncio
 import datetime
 import logging
 import json
 import os
+from paths import data_path
 import re
 import unicodedata
 
@@ -16,9 +18,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 #  SETTINGS
 # ─────────────────────────────────────────────
 
-CONFIG_FILE      = os.path.join(SCRIPT_DIR, "config.json")
-GAMES_FILE       = os.path.join(SCRIPT_DIR, "poll_games.json")
-RUN_FILE         = os.path.join(SCRIPT_DIR, "poll_run.json")
+CONFIG_FILE      = data_path("config.json")
+GAMES_FILE       = data_path("poll_games.json")
+RUN_FILE         = data_path("poll_run.json")
 SEARCH_LIMIT = 20
 DELETE_SCAN_LIMIT = 200    # how far back old poll messages are looked for
 PICKER_TIMEOUT    = 3600   # seconds the /poll game picker stays usable
@@ -26,7 +28,8 @@ PICKER_PAGE_SIZE  = 10     # games per picker page (Discord allows at most 25 se
 POLL_ANSWER_LIMIT = 10     # Discord limit of answers in one poll
 POLL_ANSWER_TEXT_LIMIT = 55   # Discord limit of one poll answer's text
 PICKER_DATE_OPTIONS = 24   # days offered next to the weekend (Discord allows at most 25 select options)
-POLL_DATE_CLOSE_HOUR = 15  # a poll for one date closes at its earliest start time
+CLOSE_BEFORE_START = datetime.timedelta(hours=1)   # voting ends this long before the earliest picked start
+MIN_POLL_DURATION  = datetime.timedelta(hours=1)   # shortest poll Discord allows
 PICKER_WEEKEND = "weekend" # date select value of the default weekend poll
 RESULTS_LANG = "en"        # language of the results posted into the poll thread
 RESULTS_NAME_WIDTH = 22    # game name column of the results table, keeps it narrow for mobile
@@ -272,13 +275,30 @@ def single_start(when_day: datetime.date, answer: str) -> tuple[datetime.date, s
     return when_day, time
 
 
-def date_poll_end(day: datetime.date) -> datetime.datetime:
-    return datetime.datetime(day.year, day.month, day.day, POLL_DATE_CLOSE_HOUR)
+def start_moment(when_day: datetime.date, answer: str) -> datetime.datetime:
+    day, time = single_start(when_day, answer)
+    hour, minute = (int(x) for x in time.split(":"))
+    return datetime.datetime(day.year, day.month, day.day, hour, minute)
+
+
+def is_reachable(moment: datetime.datetime, now: datetime.datetime) -> bool:
+    """A start still leaves room for the shortest poll that closes CLOSE_BEFORE_START ahead of it."""
+    return moment - CLOSE_BEFORE_START - MIN_POLL_DURATION >= now
+
+
+def start_options(when: str, now: datetime.datetime) -> list[tuple[str, str]]:
+    """Start answers of a weekend or ISO date that can still be voted on in time."""
+    if when == PICKER_WEEKEND:
+        first_day, answers = next_weekend()[2].date(), POLL_ANSWERS_START
+    else:
+        first_day, answers = datetime.date.fromisoformat(when), POLL_ANSWERS_START_DATE
+    return [a for a in answers if is_reachable(start_moment(first_day, a[1]), now)]
 
 
 def picker_dates(now: datetime.datetime) -> list[datetime.date]:
-    """Days a poll can be sent for: today only while it can still close at POLL_DATE_CLOSE_HOUR."""
-    first = now.date() if now < date_poll_end(now.date()) else now.date() + datetime.timedelta(days=1)
+    """Days a poll can be sent for: today only while its latest start can still be reached."""
+    today = now.date()
+    first = today if start_options(today.isoformat(), now) else today + datetime.timedelta(days=1)
     return [first + datetime.timedelta(days=i) for i in range(PICKER_DATE_OPTIONS)]
 
 
@@ -407,7 +427,7 @@ class GamePickerView(discord.ui.View):
         return self.games[start:start + PICKER_PAGE_SIZE]
 
     def _start_options(self) -> list[tuple[str, str]]:
-        return POLL_ANSWERS_START if self.when == PICKER_WEEKEND else POLL_ANSWERS_START_DATE
+        return start_options(self.when, datetime.datetime.now())
 
     def selected_starts(self) -> list[tuple[str, str]]:
         return [answer for answer in self._start_options() if answer[1] in self.start_selected]
@@ -418,6 +438,15 @@ class GamePickerView(discord.ui.View):
         self.start_selected = {text for _, text in self._start_options()}
 
     def _refresh(self) -> None:
+        # Time passes while the menu is open: drop dates and starts that can no longer be reached.
+        now = datetime.datetime.now()
+        self.when_labels = {w: label for w, label in self.when_labels.items() if w == PICKER_WEEKEND or start_options(w, now)}
+        if self.when not in self.when_labels:
+            self.set_when(PICKER_WEEKEND)
+        reachable = {text for _, text in self._start_options()}
+        self.start_selected &= reachable
+        if not self.start_selected:
+            self.start_selected = set(reachable)
         self.start_select.options = [
             discord.SelectOption(label=text, value=text, default=text in self.start_selected)
             for _, text in self._start_options()
@@ -440,7 +469,7 @@ class GamePickerView(discord.ui.View):
         self.ping_btn.style = discord.ButtonStyle.primary if self.ping else discord.ButtonStyle.secondary
         self.prev_btn.disabled = self.page == 0
         self.next_btn.disabled = self.page >= self.pages - 1
-        self.send_btn.disabled = not self.selected
+        self.send_btn.disabled = not self.selected or not self.start_selected
 
     def content(self) -> str:
         return t(self.lang, "poll_pick_prompt", channel=self.channel_mention)
@@ -491,6 +520,12 @@ class GamePickerView(discord.ui.View):
 
     @discord.ui.button(label="Send", style=discord.ButtonStyle.green, emoji="✅", row=4)
     async def send_btn(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        picked = (self.when, set(self.start_selected))
+        self._refresh()
+        if self.send_btn.disabled or (self.when, self.start_selected) != picked:
+            # Some picked times ran out while the menu was open: show what is left instead of sending.
+            await self._show(interaction)
+            return
         self.confirmed   = True
         self.interaction = interaction
         await interaction.response.edit_message(content=f"⏳ {t(self.lang, 'poll_sending')}", view=None)
@@ -692,24 +727,26 @@ class PollCog(commands.Cog):
         ping = view.ping
         start_answers = view.selected_starts()
         if view.when == PICKER_WEEKEND:
-            title, utc_offset, end_time = next_weekend()
+            title, utc_offset, friday_midnight = next_weekend()
+            first_day = friday_midnight.date()
             intro = INTRO_MESSAGE
         else:
-            day = datetime.date.fromisoformat(view.when)
-            title = date_title(day)
-            end_time = date_poll_end(day)
-            utc_offset = utc_offset_at(end_time)
+            first_day = datetime.date.fromisoformat(view.when)
+            title = date_title(first_day)
             intro = INTRO_MESSAGE_DATE.format(date=title)
+        earliest = min(start_moment(first_day, text) for _, text in start_answers)
+        end_time = earliest - CLOSE_BEFORE_START
+        if view.when != PICKER_WEEKEND:
+            utc_offset = utc_offset_at(earliest)
         if len(start_answers) == 1:
             # A Start poll with a single answer has nothing to decide, the time goes into the title.
-            first_day = end_time.date() if view.when == PICKER_WEEKEND else datetime.date.fromisoformat(view.when)
             day, time = single_start(first_day, start_answers[0][1])
-            hour, minute = (int(x) for x in time.split(":"))
-            utc_offset = utc_offset_at(datetime.datetime(day.year, day.month, day.day, hour, minute))
+            utc_offset = utc_offset_at(earliest)
             title = f"{date_title(day)} {time} (UTC+{utc_offset})"
             intro = INTRO_MESSAGE_DATE.format(date=title)
             start_answers = []
-        hours = max(1, round((end_time - datetime.datetime.now()).total_seconds() / 3600))
+        # Whole hours only, rounded down so voting never runs into the start.
+        hours = max(1, int((end_time - datetime.datetime.now()).total_seconds() // 3600))
 
         # Polls that have just ended still get their results, running ones are deleted below without any.
         await self._report_results()
@@ -767,6 +804,8 @@ class PollCog(commands.Cog):
                   "start_poll_id": poll_ids[-1] if start_answers else None,
                   "single_game": polls[0]["question"] if len(selected) == 1 else None})
         log.info(f"All polls sent. Running for {hours} hours.")
+        track("Poll Sent", interaction, games=len(selected), when="weekend" if view.when == PICKER_WEEKEND else "date",
+              hours=hours)
         await view.interaction.edit_original_response(content=f"✅ {t(lang, 'poll_sent')}")
 
     @app_commands.command(name="poll-end", description=app_commands.locale_str("End all active polls in the poll channel", key="cmd_poll_end"))
@@ -805,6 +844,7 @@ class PollCog(commands.Cog):
                 log.error(f"Could not end poll '{msg.poll.question}': {e}")
 
         log.info(f"Done. Ended: {ended}, skipped: {skipped}.")
+        track("Poll Ended", interaction, ended=ended)
         await interaction.edit_original_response(content=f"✅ {t(lang, 'poll_ended', ended=ended, skipped=skipped)}")
 
     @app_commands.command(name="poll-set", description=app_commands.locale_str("Set the poll channel", key="cmd_poll_set"))

@@ -8,20 +8,14 @@ import logging
 from lang import detect_lang, t, LOCALES, _get_explicit_lang, _save_user_lang, clear_user_lang
 from bday import validate_bday, save_bday, remove_bday, format_bday, has_bday, get_bday
 from voice import _LangSelect, load_voice_data, update_control_panel
+from stats import track, bot_version
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 log = logging.getLogger(__name__)
 
 
 def _bot_version() -> str:
-    # VERSION lives in main.py (the auto-updater depends on it being there),
-    # and importing main would start the bot — so read it from the file.
-    try:
-        with open(os.path.join(SCRIPT_DIR, "main.py"), "r", encoding="utf-8") as f:
-            match = re.search(r'^VERSION\s*=\s*"([^"]+)"', f.read(), re.MULTILINE)
-        return match.group(1) if match else "?"
-    except Exception:
-        return "?"
+    return bot_version()
 
 
 def _menu_embed(lang: str, status: str | None = None) -> discord.Embed:
@@ -120,6 +114,7 @@ class BdayMenuModal(discord.ui.Modal):
         save_bday(str(interaction.user.id), lang, day, month, year)
         await _menu_status(interaction, lang, f"✅ {t(lang, 'saved', date=format_bday(day, month, year))}")
         log.info(f"Birthday saved via menu for {interaction.user}.")
+        track("Birthday Saved", interaction)
 
 
 class BdayRemoveConfirmView(discord.ui.View):
@@ -137,6 +132,7 @@ class BdayRemoveConfirmView(discord.ui.View):
         if removed:
             status = f"✅ {t(lang, 'bday_removed')}"
             log.info(f"Birthday removed via menu by {interaction.user}.")
+            track("Birthday Removed", interaction)
         else:
             status = f"❌ {t(lang, 'bday_not_found')}"
         await _refresh_menu(interaction, lang, status)
@@ -165,6 +161,7 @@ class _MenuLangSelect(_LangSelect):
             log.info(f"Language set to '{chosen}' via menu for {interaction.user}.")
 
         await _refresh_menu(interaction, new_lang, note)
+        track("Language Changed", interaction, language=chosen)
 
         # Refresh the voice control panel when the owner changes language in their room.
         data    = load_voice_data()
@@ -245,8 +242,9 @@ class MenuView(discord.ui.View):
         repo = os.getenv("GITHUB_REPO")
         if repo:
             embed.add_field(name=t(lang, "info_github"), value=f"https://github.com/{repo}", inline=True)
-        embed.add_field(name="—", value=t(lang, "info_features"), inline=False)
+        embed.add_field(name="—", value=f"{t(lang, 'info_features')}\n-# by Polarni", inline=False)
         await interaction.response.edit_message(embed=embed, view=InfoView(lang))
+        track("Info Viewed", interaction)
 
 # ─────────────────────────────────────────────
 #  COG
