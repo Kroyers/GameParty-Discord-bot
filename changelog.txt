@@ -1,3 +1,32 @@
+[0.3.11] — 2026-11-07
+# Changed
+## Poll menu now shows times that are still possible for voting.
+## Automatic bot update
+## Fail update or crash bot will fallback
+
+# Fixed
+## Poll for one day ends afer selected 15:00
+## Update delete files what should delete
+
+[0.3.10] — 2026-11-05
+# Changed
+## Guess modifiers are less likely in a row
+## Roll will show maximum number
+## Poll have interactive menu and changes
+
+[0.3.9] — 2026-11-01
+# Changed
+## /leadboard is now only visible to one user
+## Leaderboard should look nicer
+
+[0.3.8] — 2026-08-11
+# Fixed
+## Debug b-day script
+
+[0.3.6] — 2026-07-22
+# Changed
+## Change timestamp format to Discord markdown
+
 [0.3.5] — 2026-06-17
 # Changed
 ## More balance of Guess

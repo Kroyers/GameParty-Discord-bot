@@ -3,11 +3,12 @@ from discord import app_commands
 from discord.ext import commands
 import json
 import os
+from paths import data_path
 import logging
 
 SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
 log = logging.getLogger(__name__)
-USERS_FILE   = os.path.join(SCRIPT_DIR, "users.json")
+USERS_FILE   = data_path("users.json")
 LOCALES_DIR  = os.path.join(SCRIPT_DIR, "locales")
 DEFAULT_LANG = "en"
 

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from lang import detect_lang, atomic_write_json, t
 import json
 import os
+from paths import data_path
 import logging
 import re
 import time
@@ -12,8 +13,8 @@ import xml.etree.ElementTree as ET
 import aiohttp
 
 SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
-NOTI_FILE    = os.path.join(SCRIPT_DIR, "noti.json")
-CONFIG_FILE  = os.path.join(SCRIPT_DIR, "config.json")
+NOTI_FILE    = data_path("noti.json")
+CONFIG_FILE  = data_path("config.json")
 
 log = logging.getLogger(__name__)
 

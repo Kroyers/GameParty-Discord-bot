@@ -5,15 +5,17 @@ from discord import app_commands
 from discord.ext import commands, tasks
 import json
 import os
+from paths import data_path
 import random
 import logging
 from lang import detect_lang, _get_user_lang, atomic_write_json, t
+from stats import track
 
 SCRIPT_DIR       = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE      = os.path.join(SCRIPT_DIR, "config.json")
-USERS_FILE       = os.path.join(SCRIPT_DIR, "users.json")
-GUESS_STATE_FILE = os.path.join(SCRIPT_DIR, "guess_state.json")
-RPS_STATS_FILE   = os.path.join(SCRIPT_DIR, "rps_stats.json")
+CONFIG_FILE      = data_path("config.json")
+USERS_FILE       = data_path("users.json")
+GUESS_STATE_FILE = data_path("guess_state.json")
+RPS_STATS_FILE   = data_path("rps_stats.json")
 
 _users_lock  = asyncio.Lock()
 _guess_ephs: dict[str, dict] = {}   # uid -> {"wh": Webhook, "id": int}
@@ -26,6 +28,7 @@ _GUESS_HINT_EVERY = 10           # further hints unlock every this many attempts
 _GUESS_HINT_TYPES = ("parity", "digits", "digitsum", "first_digit",
                      "last_digit", "half", "div3")     # shuffled order drawn per day
 _GUESS_NORMAL_CHANCE = 0.60      # chance of a plain day without a modifier
+_GUESS_STREAK_DECAY = 0.5        # modifier chance is multiplied by this for each modifier day in a row
 _GUESS_MODIFIERS = (             # relative weights among modifiers on modifier days
     ("wordle",  30),             # digits marked like Wordle instead of high/low
     ("hotcold", 15),             # distance only (hot/cold), no direction
@@ -87,10 +90,11 @@ def _hint_key(diff: int, low: bool) -> str:
     return "guess_close_low" if low else "guess_close_high"
 
 
-def _draw_modifier(today: str) -> str | None:
+def _draw_modifier(today: str, streak: int = 0) -> str | None:
+    """streak = how many modifier days directly precede today."""
     if today.endswith("-04-01"):
         return "pokerface"   # April Fools — the whole day, no draw
-    if random.random() < _GUESS_NORMAL_CHANCE:
+    if random.random() >= (1 - _GUESS_NORMAL_CHANCE) * _GUESS_STREAK_DECAY ** streak:
         return None
     names   = [name for name, _ in _GUESS_MODIFIERS]
     weights = [weight for _, weight in _GUESS_MODIFIERS]
@@ -253,6 +257,22 @@ def _season_name(offset_months: int = 0) -> str:
         month += 12
         year  -= 1
     return f"{month:02d}-{str(year)[2:]}"
+
+
+def _leaderboard_table(rows: list[tuple], lang: str) -> str:
+    """rows: (name, total, guess_pts, guess_games, rps_pts, rps_games, seasons_won).
+    Monospace table in a code block + legend. Emoji are 2 cells wide, hence the narrower header fields."""
+    lines = [
+        f"{'#':>2}  {t(lang, 'leaderboard_col_player'):<12}  {t(lang, 'leaderboard_col_pts'):>4}"
+        f"  {'🔢':>5}  {'✊':>4}  {'🏆':>3}",
+        "─" * 43,
+    ]
+    for i, (name, total, gpts, gg, rpts, rg, sw) in enumerate(rows, 1):
+        if len(name) > 12:
+            name = name[:11] + "…"
+        lines.append(f"{i:>2}  {name:<12}  {total:>4}  {f'{gpts}/{gg}':>6}  {f'{rpts}/{rg}':>5}  {sw:>4}")
+    body = "\n".join(lines).replace("`", "'")
+    return f"```\n{body}\n```\n-# {t(lang, 'leaderboard_legend')}"
 
 
 # ─────────────────────────────────────────────
@@ -558,6 +578,7 @@ class GuessModal(discord.ui.Modal):
             status = t(lang, "guess_correct", attempts=current)
             solved = True
             log.info(f"Guess solved by {interaction.user} in {current} attempts")
+            track("Guess Solved", interaction, attempts=current, modifier=state.get("modifier") or "none")
         else:
             _save_guess_state(state)
             status = _wrong_status(state, guess, number, current, lang)
@@ -961,7 +982,9 @@ class GamesCog(commands.Cog):
             if state.get("solvers"):
                 await self._award_guess_points(state)
 
-        modifier = _draw_modifier(today)
+        # States saved before streaks existed have no counter — fall back to yesterday's modifier.
+        streak   = state.get("modifier_streak", 1 if state.get("modifier") else 0)
+        modifier = _draw_modifier(today, streak)
         lo, hi = 1, 9999
         if modifier == "wordle":
             lo = 1000          # always 4 digits
@@ -972,7 +995,7 @@ class GamesCog(commands.Cog):
             number = random.randint(lo, hi)
         new_state = {"date": today, "number": number, "attempts": {}, "started": {}, "solvers": {},
                      "hints": random.sample(_GUESS_HINT_TYPES, len(_GUESS_HINT_TYPES)),
-                     "modifier": modifier}
+                     "modifier": modifier, "modifier_streak": streak + 1 if modifier else 0}
         _save_guess_state(new_state)
 
         start_line = t("en", "guess_start")
@@ -999,6 +1022,14 @@ class GamesCog(commands.Cog):
                 ))
             await ch.send(embeds=embeds)
         log.info(f"Guess game started: number={number}, date={today}, modifier={modifier}")
+
+    def _display_name(self, guild: discord.Guild | None, uid: str) -> str:
+        # Plain text — mentions don't render inside the leaderboard code block.
+        member = guild.get_member(int(uid)) if guild else None
+        if member:
+            return member.display_name
+        user = self.bot.get_user(int(uid))
+        return user.display_name if user else "?"
 
     async def _auto_season_reset(self, ch: discord.TextChannel | None) -> discord.Embed:
         guild = getattr(ch, "guild", None)
@@ -1034,15 +1065,12 @@ class GamesCog(commands.Cog):
                         s["season_wins"] = 0
             _save_users(users)
 
-        medals = ["🥇", "🥈", "🥉"]
         if rows:
-            lines = []
-            for i, (uid, total, gpts, gg, rpts, rg) in enumerate(rows[:10]):
-                member = guild.get_member(int(uid)) if guild else None
-                name   = member.display_name if member else f"<@{uid}>"
-                medal  = medals[i] if i < 3 else f" {i + 1}."
-                lines.append(f"{medal} **{name}** — **{total}** b · 🔢 {gpts}/{gg} · ✊ {rpts}/{rg}")
-            desc = "\n".join(lines)
+            table = [
+                (self._display_name(guild, uid), total, gpts, gg, rpts, rg, users[uid].get("seasons_won", 0))
+                for uid, total, gpts, gg, rpts, rg in rows[:10]
+            ]
+            desc = _leaderboard_table(table, "en")
         else:
             desc = t("en", "season_auto_reset_empty")
 
@@ -1214,26 +1242,19 @@ class GamesCog(commands.Cog):
 
         rows.sort(key=lambda x: x[2], reverse=True)
 
-        medals = ["🥇", "🥈", "🥉"]
-        lines  = []
-        for i, (uid, entry, total, rps_pts, guess_pts, rps, guess) in enumerate(rows[:10]):
-            member = interaction.guild.get_member(int(uid)) if interaction.guild else None
-            name   = member.display_name if member else f"<@{uid}>"
-            medal  = medals[i] if i < 3 else f" {i + 1}."
-            sw = entry.get("seasons_won", 0)
-            rg = rps.get("season_games",   0)
-            gg = guess.get("season_games", 0)
-            lines.append(
-                f"{medal} **{name}** [{sw}] — **{total}** {t(lang, 'leaderboard_pts')}"
-                f" · 🔢 {guess_pts}/{gg} · ✊ {rps_pts}/{rg}"
-            )
+        table = [
+            (self._display_name(interaction.guild, uid), total,
+             guess_pts, guess.get("season_games", 0), rps_pts, rps.get("season_games", 0),
+             entry.get("seasons_won", 0))
+            for uid, entry, total, rps_pts, guess_pts, rps, guess in rows[:10]
+        ]
 
         embed = discord.Embed(
             title=t(lang, "leaderboard_title", season=_season_name()),
-            description="\n".join(lines),
+            description=_leaderboard_table(table, lang),
             color=discord.Color.gold(),
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         log.debug(f"/leaderboard viewed by {interaction.user}")
 
     @app_commands.command(

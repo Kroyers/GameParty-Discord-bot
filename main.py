@@ -5,6 +5,13 @@ import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+import json
+import paths
+
+paths.migrate_data()   # data files used to live next to the code (run.py does this too)
+RUNNER       = os.environ.get("GP_RUNNER") == "1"   # started by run.py, which installs updates
+RESTART_CODE = 3                                   # exit code that asks run.py for a restart
+
 # ─────────────────────────────────────────────
 #  DEPENDENCY BOOTSTRAP  (stdlib only above this point)
 # ─────────────────────────────────────────────
@@ -56,6 +63,8 @@ def _ensure_dependencies() -> None:
     print("Dependencies installed — restarting...")
     os.environ["GP_DEPS_RETRY"] = "1"
     if sys.platform == "win32":
+        if RUNNER:   # stay a child of run.py so it keeps watching the bot
+            sys.exit(subprocess.call([sys.executable] + sys.argv, env=os.environ))
         subprocess.Popen([sys.executable] + sys.argv, env=os.environ)
         sys.exit(0)
     os.execv(sys.executable, [sys.executable] + sys.argv)
@@ -64,11 +73,12 @@ _ensure_dependencies()
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from lang import detect_lang, t as _t
+from voice import load_voice_data
+import asyncio
 import re
-import io
-import zipfile
+import time
 import urllib.request
 import urllib.error
 import logging
@@ -76,7 +86,7 @@ from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime
 from dotenv import load_dotenv
 
-ENV_FILE   = os.path.join(SCRIPT_DIR, ".env")
+ENV_FILE   = paths.data_path(".env")
 load_dotenv(ENV_FILE)
 # místo reakcí tlačítka na role, /leadeboard jen neviditelný chat - udělat interaktivní menu pro hry
 
@@ -118,9 +128,11 @@ if not _github_env:
 else:
     GITHUB_REPO = _github_env
 GIT_BRANCH  = "main"
-VERSION     = "0.3.6" #MAJOR . MINOR - new functions . PATCH - bugfix
+VERSION     = "0.3.11" #MAJOR . MINOR - new functions . PATCH - bugfix
 STATUS_TEXT = "👥 {count}"   # bot presence text, {count} = humans on the server
 LOG_LEVEL   = "INFO"         # DEBUG (everything incl. stale-button hits) | INFO (normal operation) | WARNING (problems only) | ERROR (failures only)
+AUTO_UPDATE_HOUR = 4         # local hour from which the daily GitHub check runs (the quietest time on the server)
+AUTO_UPDATE_IDLE = 60        # minutes without any use of the bot (incl. people in its voice rooms) before it restarts into a new version
 
 EXTENSIONS = [
     "lang",
@@ -128,6 +140,8 @@ EXTENSIONS = [
     "poll",
     "voice",
     "noti",
+    "watch",
+    "stats",
     "games",
     "menu",
 ]
@@ -219,71 +233,49 @@ log = logging.getLogger(__name__)
 #  AUTO-UPDATE
 # ─────────────────────────────────────────────
 
-SKIP_ON_UPDATE = {".gitignore", ".gitattributes"}
+def _parse_version(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in v.split("-")[0].split("."))
 
-def check_for_updates() -> bool:
-    """Downloads ZIP from GitHub if remote VERSION is newer. Returns True if updated."""
-    if not GITHUB_REPO:
-        return False
+
+def _remote_version() -> str | None:
+    """VERSION of main.py on GitHub, None if it can't be read. Raises URLError when GitHub is unreachable."""
+    url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GIT_BRANCH}/main.py"
+    with urllib.request.urlopen(url, timeout=10) as r:
+        content = r.read().decode()
+    match = re.search(r'^VERSION\s*=\s*"([^"]+)"', content, re.MULTILINE)
+    if not match:
+        log.warning("VERSION not found in remote main.py — auto-update skipped.")
+        return None
+    return match.group(1)
+
+
+def _failed_versions() -> list[str]:
+    """Versions run.py rolled back because they crashed — not worth restarting for."""
     try:
-        url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GIT_BRANCH}/main.py"
-        with urllib.request.urlopen(url, timeout=10) as r:
-            content = r.read().decode()
-
-        match = re.search(r'^VERSION\s*=\s*"([^"]+)"', content, re.MULTILINE)
-        if not match:
-            log.warning("VERSION not found in remote main.py — auto-update skipped.")
-            return False
-
-        remote_version = match.group(1)
-        parse = lambda v: tuple(int(x) for x in v.split("-")[0].split("."))
-        if parse(remote_version) <= parse(VERSION):
-            log.info(f"Up to date (v{VERSION}).")
-            return False
-
-        log.info(f"Update available: v{VERSION} -> v{remote_version}. Downloading...")
-        zip_url = f"https://github.com/{GITHUB_REPO}/archive/refs/heads/{GIT_BRANCH}.zip"
-        with urllib.request.urlopen(zip_url, timeout=30) as r:
-            zip_data = r.read()
-
-        with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
-            prefix = z.namelist()[0].split("/")[0] + "/"
-            root   = os.path.realpath(SCRIPT_DIR)
-            for item in z.namelist():
-                relative = item[len(prefix):]
-                if not relative:
-                    continue
-                top = relative.split("/")[0]
-                if top in SKIP_ON_UPDATE:
-                    continue
-                target = os.path.join(SCRIPT_DIR, relative)
-                # Zip Slip guard: never write outside the bot directory.
-                if not os.path.realpath(target).startswith(root + os.sep):
-                    log.warning(f"Skipping unsafe zip entry: {item}")
-                    continue
-                if item.endswith("/"):
-                    os.makedirs(target, exist_ok=True)
-                else:
-                    os.makedirs(os.path.dirname(target), exist_ok=True)
-                    with z.open(item) as src, open(target, "wb") as dst:
-                        dst.write(src.read())
-
-        # New or raised dependencies are handled by _ensure_dependencies()
-        # when the updated script starts after the restart.
-        log.info(f"Updated to v{remote_version}.")
-        return True
-
-    except urllib.error.URLError as e:
-        log.warning(f"GitHub unreachable: {e}")
-    except Exception as e:
-        log.warning(f"Auto-update error: {e}")
-    return False
+        with open(os.path.join(paths.UPDATE_DIR, "state.json"), "r", encoding="utf-8") as f:
+            return json.load(f).get("failed", [])
+    except (OSError, ValueError):
+        return []
 
 # ─────────────────────────────────────────────
 #  BOT
 # ─────────────────────────────────────────────
 
 _restart = False
+
+# ── Automatic update while the bot runs ─────
+# Once a day from AUTO_UPDATE_HOUR the bot asks GitHub for a newer VERSION. A found update waits
+# until nobody has used the bot for AUTO_UPDATE_IDLE minutes, so the restart can move later in the day.
+_last_activity      = time.monotonic()
+_last_update_check  = datetime.now().date() if datetime.now().hour >= AUTO_UPDATE_HOUR else None   # startup already checked
+_pending_update: str | None = None
+
+
+def _update_step(now: datetime, idle_minutes: float, last_check, pending: str | None) -> tuple[bool, bool]:
+    """(check GitHub now, restart now) for the current moment."""
+    check = pending is None and now.hour >= AUTO_UPDATE_HOUR and last_check != now.date()
+    restart = pending is not None and idle_minutes >= AUTO_UPDATE_IDLE
+    return check, restart
 
 intents = discord.Intents.default()
 intents.members = True
@@ -308,6 +300,10 @@ async def _update_member_status():
 async def on_ready():
     await _update_member_status()
     log.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    if RUNNER:   # tells run.py that this version works
+        os.makedirs(paths.UPDATE_DIR, exist_ok=True)
+        with open(os.path.join(paths.UPDATE_DIR, "ready"), "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
 
 
 @bot.event
@@ -320,7 +316,57 @@ async def on_member_remove(_member):
     await _update_member_status()
 
 
+@bot.listen("on_interaction")
+async def _note_activity(_interaction: discord.Interaction):
+    # Any slash command, button, menu or form counts as use of the bot.
+    global _last_activity
+    _last_activity = time.monotonic()
+
+
+def _voice_rooms_in_use() -> bool:
+    """Someone (not a bot) sits in one of the voice rooms the bot created."""
+    for channel_id in load_voice_data():
+        channel = bot.get_channel(int(channel_id)) if str(channel_id).isdigit() else None
+        if channel is not None and any(not m.bot for m in getattr(channel, "members", [])):
+            return True
+    return False
+
+
+@tasks.loop(minutes=10)
+async def auto_update_loop():
+    global _last_update_check, _pending_update, _restart, _last_activity
+    if not GITHUB_REPO or not RUNNER:   # only run.py can install an update
+        return
+    if _voice_rooms_in_use():
+        _last_activity = time.monotonic()   # an occupied room counts as use, the hour starts when it empties
+    now  = datetime.now()
+    idle = (time.monotonic() - _last_activity) / 60
+    check, restart = _update_step(now, idle, _last_update_check, _pending_update)
+    if check:
+        _last_update_check = now.date()
+        try:
+            remote = await asyncio.to_thread(_remote_version)
+        except Exception as e:
+            log.warning(f"Auto-update check failed: {e}")
+            return
+        if remote and _parse_version(remote) > _parse_version(VERSION) and remote not in _failed_versions():
+            _pending_update = remote
+            log.info(f"Update v{remote} found, restarting once the bot has been idle for {AUTO_UPDATE_IDLE} minutes.")
+        _, restart = _update_step(now, idle, _last_update_check, _pending_update)
+    if restart:
+        log.info(f"Bot idle for {idle:.0f} minutes, restarting to update to v{_pending_update}.")
+        _restart = True
+        await bot.change_presence(status=discord.Status.idle)
+        await bot.close()
+
+
+@auto_update_loop.before_loop
+async def _before_auto_update():
+    await bot.wait_until_ready()
+
+
 async def setup_hook_fn():
+    auto_update_loop.start()
     for ext in EXTENSIONS:
         await bot.load_extension(ext)
         log.info(f"Extension loaded: {ext}")
@@ -351,15 +397,16 @@ async def restart_cmd(interaction: discord.Interaction):
 bot.setup_hook = setup_hook_fn
 
 def _do_restart():
+    if RUNNER:   # run.py restarts the bot and installs a newer version first
+        sys.exit(RESTART_CODE)
     if sys.platform == "win32":
         subprocess.Popen([sys.executable] + sys.argv)
         sys.exit(0)
     else:
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
-if check_for_updates():
-    log.info("Restarting to apply update...")
-    _do_restart()
+if not RUNNER:
+    log.info("Started without run.py — updates are not installed. Start the bot with run.py to get them.")
 
 bot.run(BOT_TOKEN, log_handler=None)
 

@@ -6,6 +6,7 @@ from lang import detect_lang, _save_user_lang, clear_user_lang, _get_user_lang, 
 import json
 import datetime
 import os
+from paths import data_path
 import logging
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -14,9 +15,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 #  SETTINGS
 # ─────────────────────────────────────────────
 
-USERS_FILE   = os.path.join(SCRIPT_DIR, "users.json")
-KEY_FILE     = os.path.join(SCRIPT_DIR, "bday.key")
-CONFIG_FILE  = os.path.join(SCRIPT_DIR, "config.json")
+USERS_FILE   = data_path("users.json")
+KEY_FILE     = data_path("bday.key")
+CONFIG_FILE  = data_path("config.json")
 
 log = logging.getLogger(__name__)
 
@@ -216,6 +217,24 @@ class BdayCog(commands.Cog):
         )
         log.info(f"Birthday channel set to #{target.name} ({target.id}) by {interaction.user}.")
 
+    @app_commands.command(
+        name="bday-wish-now",
+        description=app_commands.locale_str(
+            "Send today's birthday wishes right now (e.g. after a delivery failure)",
+            key="cmd_bday_wish_now",
+        ),
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def bday_wish_now(self, interaction: discord.Interaction):
+        lang = detect_lang(interaction)
+        await interaction.response.defer(ephemeral=True)
+        sent, failed, channel_ok = await self._send_due_wishes()
+        if not channel_ok:
+            await interaction.followup.send(f"❌ {t(lang, 'bday_wishnow_no_channel')}")
+            return
+        await interaction.followup.send(f"✅ {t(lang, 'bday_wishnow_result', sent=sent, failed=failed)}")
+        log.info(f"Manual birthday wish trigger by {interaction.user}: sent={sent}, failed={failed}.")
+
     # ── Task ──────────────────────────────────
 
     @tasks.loop(hours=1)
@@ -223,16 +242,22 @@ class BdayCog(commands.Cog):
         now = datetime.datetime.now(datetime.timezone.utc)
         if now.hour != 0:
             return
-
         log.debug("Running daily birthday check.")
+        await self._send_due_wishes()
+
+    async def _send_due_wishes(self) -> tuple[int, int, bool]:
+        """Sends wishes to active users whose birthday is today (UTC) and who
+        haven't been wished yet this year. Returns (sent, failed, channel_ok) —
+        channel_ok is False when the configured channel doesn't exist."""
         channel = self.bot.get_channel(self.bday_channel_id)
         if channel is None:
             log.warning(f"Birthday channel (ID {self.bday_channel_id}) not found.")
-            return
+            return 0, 0, False
 
         users = load_users()
-        today = now.date()
+        today = datetime.datetime.now(datetime.timezone.utc).date()
         changed = False
+        sent = failed = 0
 
         for user_id, data in users.items():
             if not data.get("active", True):
@@ -255,12 +280,15 @@ class BdayCog(commands.Cog):
                 await channel.send(message)
                 users[user_id]["last_wished"] = today.year
                 changed = True
+                sent += 1
                 log.info(f"Birthday wish sent for user {user_id}.")
             except Exception as e:
+                failed += 1
                 log.error(f"Error sending birthday wish for {user_id}: {e}")
 
         if changed:
             save_users(users)
+        return sent, failed, True
 
 
 async def setup(bot: commands.Bot):
